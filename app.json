@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Domino Scorer",
+    "slug": "domino-scorer",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0078D4"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.tuempresa.dominoscorer",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Usamos la cámara para detectar los puntos de las fichas de dominó automáticamente."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0078D4"
+      },
+      "package": "com.tuempresa.dominoscorer",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Usamos la cámara para detectar los puntos de las fichas de dominó automáticamente."
+        }
+      ]
+    ],
+    "scheme": "domino-scorer"
+  }
+}
