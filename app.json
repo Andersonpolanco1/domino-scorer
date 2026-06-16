@@ -30,7 +30,8 @@
       "package": "com.tuempresa.dominoscorer",
       "versionCode": 1,
       "permissions": [
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "plugins": [
@@ -40,8 +41,15 @@
         {
           "cameraPermission": "Usamos la cámara para detectar los puntos de las fichas de dominó automáticamente."
         }
-      ]
+      ],
+      "expo-font"
     ],
-    "scheme": "domino-scorer"
+    "scheme": "domino-scorer",
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "dadeda08-fbc3-458f-bc50-0eee72733738"
+      }
+    }
   }
 }
