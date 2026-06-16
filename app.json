@@ -9,7 +9,7 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.tuempresa.dominoscorer",
+      "bundleIdentifier": "com.polanco.dominoscorer",
       "buildNumber": "1",
       "infoPlist": {
         "NSCameraUsageDescription": "Usamos la cámara para detectar los puntos de las fichas de dominó automáticamente."
@@ -20,7 +20,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0078D4"
       },
-      "package": "com.tuempresa.dominoscorer",
+      "package": "com.polanco.dominoscorer",
       "versionCode": 1,
       "permissions": [
         "android.permission.CAMERA",
