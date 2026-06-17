@@ -22,7 +22,7 @@ export const STRINGS = {
     reachedTarget: "Alcanzó los {n} puntos · el torneo se guardará",
     newGame: "Nueva partida",
     resetConfirmTitle: "Reiniciar partida",
-    resetConfirmMsg: "El torneo actual se guardará en el historial.",
+    resetConfirmMsg: "La partida actual se descartará y empezarás de cero.",
     noTournaments: "Sin torneos guardados",
     noTournamentsSub:
       "Cuando termines o reinicies una partida, se guardará aquí automáticamente.",
@@ -130,7 +130,8 @@ export const STRINGS = {
     reachedTarget: "Reached {n} points · game will be saved",
     newGame: "New game",
     resetConfirmTitle: "Reset game",
-    resetConfirmMsg: "The current game will be saved to history.",
+    resetConfirmMsg:
+      "The current game will be discarded and you'll start fresh.",
     noTournaments: "No saved games",
     noTournamentsSub:
       "When you finish or reset a game, it gets saved here automatically.",
