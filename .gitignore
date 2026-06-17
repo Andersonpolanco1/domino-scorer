@@ -25,3 +25,6 @@ GoogleService-Info.plist
 .idea/
 .vscode/
 *.swp
+
+.env
+

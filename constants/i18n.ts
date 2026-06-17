@@ -48,6 +48,9 @@ export const STRINGS = {
     tip2: "Fondo sólido que contraste con las fichas",
     tip3: "Fichas planas sobre la mesa",
     tip4: "Cámara perpendicular, desde arriba",
+    tip5: "Fichas en posición vertical, alineadas en fila",
+    tip6: "Alinea la primera ficha con la marca de inicio del encuadre",
+    tip7: "A más fichas en la foto, acerca más la cámara para que cada una se vea con detalle",
     detectPoints: "Detectar puntos",
     analyzing: "Analizando...",
     activateCamera: "Activar cámara",
@@ -109,10 +112,41 @@ export const STRINGS = {
     tapHint: "tocar para anotar",
     sumTilesHint: "Puedes sumar cada ficha: 6+3+9",
     points: "puntos",
+    // ── Calidad de imagen en tiempo real ──
+    qualityChecking: "Evaluando la luz de la imagen…",
+    qualityGood: "Buena iluminación. Listo para capturar.",
+    qualityLowLight: "Poca luz. Acerca una lámpara o usa luz natural.",
+    qualityOverexposed:
+      "Demasiada luz o reflejo. Evita luz directa muy fuerte.",
+    qualityUnevenShadow:
+      "Hay sombra parcial sobre las fichas. Ilumina todo por igual.",
+    qualityLowContrast:
+      "Poco contraste. Usa un fondo que resalte más las fichas.",
+    qualityBlurry: "Imagen borrosa. Mantén el teléfono firme y enfocado.",
+    qualityInvalidData: "No se pudo analizar la imagen. Intenta de nuevo.",
+    qualityTooFar:
+      "Las fichas se ven muy pequeñas. Acerca la cámara o reduce la cantidad de fichas en la foto.",
+    // ── Control de escala de marcadores ──
+    tileScaleLabel: "Cantidad de fichas en la foto",
+    tileScaleFew: "Pocas fichas — acércate más a la mesa",
+    tileScaleMid: "Cantidad media",
+    tileScaleMany: "Muchas fichas — aléjate más de la mesa",
+    qualityWaitingGood: "Esperando buena luz…",
+    qualityBlockedTitle: "Imagen no apta",
+    // ── Validación geométrica de marcadores ──
+    layoutMismatchTitle: "El encuadre no coincide con las guías",
+    layoutDividerNotFound:
+      "No se detectó la línea divisoria donde indican las guías. Alinea las fichas con los 4 marcadores antes de tomar la foto.",
+    layoutZeroTiles:
+      "No se detectó ninguna ficha en el área marcada. Alinea el borde izquierdo de la primera ficha con la marca de inicio.",
+    // ── Desglose de fichas individuales ──
+    tileBreakdown: "Fichas detectadas",
+    tileBreakdownWarning:
+      "Algunas fichas (en rojo) no se pudieron confirmar con certeza. Revisa el resultado antes de sumar los puntos.",
   },
   en: {
     appName: "Domino Scorer",
-    scoreboard: "Scoreboard",
+    scoreboard: "Score",
     camera: "Camera",
     tournaments: "Games",
     stats: "Stats",
@@ -157,11 +191,14 @@ export const STRINGS = {
     tip2: "Solid background that contrasts with the tiles",
     tip3: "Tiles flat on the table",
     tip4: "Camera perpendicular, from above",
-    detectPoints: "Scan Tiles",
+    tip5: "Tiles in vertical position, aligned in a row",
+    tip6: "Align the first tile with the starting mark on the frame",
+    tip7: "The more tiles in the photo, the closer the camera should be so each one stays detailed",
+    detectPoints: "Detect points",
     analyzing: "Analyzing...",
     activateCamera: "Turn on camera",
     tilesDetected: "Tiles",
-    pointsDetected: "Pips",
+    pointsDetected: "Points",
     accuracy: "Accuracy",
     high: "High",
     medium: "Medium",
@@ -183,7 +220,7 @@ export const STRINGS = {
     unlockPro: "Unlock Pro",
     proFeature: "Pro feature",
     proDesc:
-      "Unlimited camera scans, all themes, advanced statistics, PDF export, and no ads.",
+      "Unlimited camera, all themes, advanced stats, PDF export and no ads.",
     removeAds: "Remove ads",
     restorePurchases: "Restore purchases",
     backup: "Backup",
@@ -203,20 +240,51 @@ export const STRINGS = {
     lisa: "Shutout",
     lisaDesc: "{loser} was left with zero!",
     paseNoCabe: "Does not fit: the pass must stay below the limit (max {n})",
-    capicuaDesc: "Adds bonus points for a Capicúa",
+    capicuaDesc: "Adds extra points for capicúa",
     paseDesc: "Adds extra points for a run pass",
     showButton: "Show button",
     pointValue: "Points",
     applyCapicua: "Capicúa applied (+{n})",
     applyPase: "Run pass (+{n})",
     quickAdd: "Quick add",
-    tapToScore: "Tap a team to add points",
+    tapToScore: "Tap a team to score",
     addTo: "Add {n} to {name}",
     clear: "Clear",
     scoring: "scoring…",
     tapHint: "tap to score",
-    sumTilesHint: "Enter the value of each tile: 6+3+9",
+    sumTilesHint: "Add the values of all tiles: 6+3+9",
     points: "points",
+    // ── Real-time image quality ──
+    qualityChecking: "Checking the lighting…",
+    qualityGood: "Good lighting. Ready to capture.",
+    qualityLowLight: "Low light. Move closer to a lamp or use natural light.",
+    qualityOverexposed:
+      "Too much light or glare. Avoid very strong direct light.",
+    qualityUnevenShadow:
+      "There's partial shadow on the tiles. Light everything evenly.",
+    qualityLowContrast:
+      "Low contrast. Use a background that stands out more from the tiles.",
+    qualityBlurry: "Blurry image. Hold the phone steady and in focus.",
+    qualityInvalidData: "Couldn't analyze the image. Please try again.",
+    qualityTooFar:
+      "The tiles look very small. Move the camera closer or photograph fewer tiles at a time.",
+    // ── Marker scale control ──
+    tileScaleLabel: "Number of tiles in the photo",
+    tileScaleFew: "Few tiles — move closer to the table",
+    tileScaleMid: "Medium amount",
+    tileScaleMany: "Many tiles — move farther from the table",
+    qualityWaitingGood: "Waiting for good light…",
+    qualityBlockedTitle: "Image not suitable",
+    // ── Marker geometry validation ──
+    layoutMismatchTitle: "Framing doesn't match the guides",
+    layoutDividerNotFound:
+      "No divider line was found where the guides indicate. Align your tiles with the 4 markers before taking the photo.",
+    layoutZeroTiles:
+      "No tile was detected in the marked area. Align the left edge of the first tile with the start mark.",
+    // ── Individual tile breakdown ──
+    tileBreakdown: "Detected tiles",
+    tileBreakdownWarning:
+      "Some tiles (in red) could not be confirmed with certainty. Review the result before adding the points.",
   },
 };
 

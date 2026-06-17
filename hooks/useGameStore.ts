@@ -5,11 +5,11 @@ import { Lang } from "@/constants/i18n";
 
 export interface HistoryEntry {
   id: string;
-  slot: 0 | 1; // team index
+  slot: 0 | 1;
   name: string;
   points: number;
   method: "manual" | "camera";
-  bonus?: "capicua" | "pase"; // special play applied to this entry
+  bonus?: "capicua" | "pase";
   timestamp: number;
 }
 
@@ -24,6 +24,16 @@ export interface Tournament {
   reason: "win" | "reset";
 }
 
+// ─── Quota de scans gratuitos ─────────────────────────────────────────────────
+
+export const FREE_SCANS_PER_DAY = 3;
+
+function todayKey(): string {
+  return new Date().toISOString().slice(0, 10); // "2025-06-16"
+}
+
+// ─── Tipos del store ──────────────────────────────────────────────────────────
+
 interface GameState {
   names: [string, string];
   scores: [number, number];
@@ -36,12 +46,17 @@ interface GameState {
   isPro: boolean;
   adsRemoved: boolean;
 
-  // Special plays config
+  // Scan quota (free tier)
+  dailyScanCount: number; // scans usados hoy
+  lastScanDate: string; // "YYYY-MM-DD" del último scan
+
+  // Special plays
   capicuaEnabled: boolean;
   capicuaPoints: number;
   paseEnabled: boolean;
   pasePoints: number;
 
+  // Actions
   setName: (slot: 0 | 1, name: string) => void;
   addPoints: (
     slot: 0 | 1,
@@ -61,8 +76,13 @@ interface GameState {
   setCapicua: (enabled: boolean, points?: number) => void;
   setPase: (enabled: boolean, points?: number) => void;
   loadFromStorage: () => Promise<void>;
-  exportBackup: () => object; // returns full state snapshot for backup
-  importBackup: (data: any) => boolean; // restores from a backup object; returns success
+  exportBackup: () => object;
+  importBackup: (data: any) => boolean;
+
+  // Scan quota actions
+  canScan: () => boolean; // ¿puede hacer un scan ahora?
+  consumeScan: () => void; // registra un scan consumido
+  scansRemaining: () => number; // cuántos le quedan hoy
 }
 
 const STORAGE_KEY = "domino_state_v3";
@@ -78,10 +98,38 @@ export const useGameStore = create<GameState>((set, get) => ({
   lang: "es",
   isPro: false,
   adsRemoved: false,
+  dailyScanCount: 0,
+  lastScanDate: "",
   capicuaEnabled: true,
   capicuaPoints: 25,
   paseEnabled: true,
   pasePoints: 25,
+
+  // ── Scan quota ──────────────────────────────────────────────────────────────
+
+  canScan: () => {
+    const { isPro, dailyScanCount, lastScanDate } = get();
+    if (isPro) return true;
+    if (lastScanDate !== todayKey()) return true; // nuevo día, contador resetea
+    return dailyScanCount < FREE_SCANS_PER_DAY;
+  },
+
+  consumeScan: () => {
+    const { dailyScanCount, lastScanDate } = get();
+    const today = todayKey();
+    const newCount = lastScanDate === today ? dailyScanCount + 1 : 1;
+    set({ dailyScanCount: newCount, lastScanDate: today });
+    persist(get());
+  },
+
+  scansRemaining: () => {
+    const { isPro, dailyScanCount, lastScanDate } = get();
+    if (isPro) return FREE_SCANS_PER_DAY;
+    if (lastScanDate !== todayKey()) return FREE_SCANS_PER_DAY;
+    return Math.max(0, FREE_SCANS_PER_DAY - dailyScanCount);
+  },
+
+  // ── Juego ───────────────────────────────────────────────────────────────────
 
   setName: (slot, name) => {
     const names = [...get().names] as [string, string];
@@ -132,9 +180,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   archiveAndReset: (reason, winner) => {
     const { names, scores, target, history, tournaments } = get();
     let nt = tournaments;
-    const shouldArchive =
-      reason === "win" && winner !== null && history.length > 0;
-    if (shouldArchive) {
+    if (reason === "win" && winner !== null && history.length > 0) {
       const tour: Tournament = {
         id: Date.now().toString(),
         names: [...names] as [string, string],
@@ -177,6 +223,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ adsRemoved: v });
     persist({ ...get(), adsRemoved: v });
   },
+
   setCapicua: (enabled, points) => {
     set({
       capicuaEnabled: enabled,
@@ -210,6 +257,8 @@ export const useGameStore = create<GameState>((set, get) => ({
           lang: s.lang ?? "es",
           isPro: s.isPro ?? false,
           adsRemoved: s.adsRemoved ?? false,
+          dailyScanCount: s.dailyScanCount ?? 0,
+          lastScanDate: s.lastScanDate ?? "",
           capicuaEnabled: s.capicuaEnabled ?? true,
           capicuaPoints: s.capicuaPoints ?? 25,
           paseEnabled: s.paseEnabled ?? true,
@@ -221,7 +270,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
 
-  // Returns a snapshot of everything worth backing up.
   exportBackup: () => {
     const st = get();
     return {
@@ -242,7 +290,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     };
   },
 
-  // Restores from a backup object. Validates the file is one of ours.
   importBackup: (data: any) => {
     try {
       if (
@@ -276,6 +323,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
 }));
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 export function computeStats(tournaments: Tournament[]) {
   const winsByName: Record<string, number> = {};
@@ -329,6 +378,8 @@ async function persist(state: Partial<GameState>) {
         lang: state.lang,
         isPro: state.isPro,
         adsRemoved: state.adsRemoved,
+        dailyScanCount: state.dailyScanCount,
+        lastScanDate: state.lastScanDate,
         capicuaEnabled: state.capicuaEnabled,
         capicuaPoints: state.capicuaPoints,
         paseEnabled: state.paseEnabled,

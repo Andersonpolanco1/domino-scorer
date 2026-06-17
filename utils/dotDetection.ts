@@ -2,12 +2,22 @@
  * Domino dot detection — computer vision, 100% offline.
  * Works on iOS and Android via React Native.
  *
- * FIXES vs original:
- *  1. decodeToPixels was reading raw JPEG-compressed bytes as pixels (wrong).
- *     Now uses a WebView canvas approach (see CameraScreen) to get real RGBA data.
- *  2. clusterByDistance maxDist was too large, merging two adjacent tiles into one.
- *     Now uses a tighter default (7% of the shorter dimension) and splits
- *     groups that are suspiciously large into sub-tiles.
+ * Pipeline (todo matemático, sin modelos de IA):
+ *   1. RGBA → escala de grises (luminancia).
+ *   2. Blur gaussiano 5×5 (reducción de ruido).
+ *   3. Umbral de Otsu (adaptativo — funciona con cualquier color de ficha).
+ *   4. Binarización (puntos oscuros = 1).
+ *   5. Componentes conectados (flood fill) → blobs candidatos.
+ *   6. Filtro por área (descarta ruido y manchas grandes que no son puntos).
+ *   7. Filtro por circularidad (descarta líneas, bordes, texto grabado).
+ *   8. Clustering espacial → agrupa puntos cercanos en fichas individuales.
+ *   9. División de grupos sospechosamente grandes (fichas pegadas que el
+ *      clustering fusionó por error).
+ *
+ * NOTA IMPORTANTE:
+ *   decodeToPixels debe recibir píxeles RGBA reales (de un canvas/WebView,
+ *   no bytes JPEG crudos sin decodificar — los bytes JPEG están comprimidos
+ *   con Huffman/DCT y NO representan valores de píxel directamente).
  */
 
 export interface DetectionResult {
@@ -15,63 +25,62 @@ export interface DetectionResult {
   tilesFound: number;
   confidence: "high" | "medium" | "low";
   dotCentroids: { x: number; y: number; circularity?: number }[];
+  /** Cada sub-array contiene índices hacia dotCentroids que pertenecen a la misma ficha */
   tileGroups: number[][];
 }
 
 /**
- * Main detection function.
- * Receives a flat RGBA Uint8ClampedArray decoded by a real canvas (not raw JPEG bytes).
+ * Función principal de entrada cuando se tienen píxeles RGBA reales
+ * (decodificados por un canvas, no bytes JPEG crudos).
  */
 export function detectDominoDotsFromPixels(
   pixels: Uint8ClampedArray,
   width: number,
   height: number,
 ): DetectionResult {
-  // Convert RGBA → grayscale, then run the shared core.
   const gray = toGrayscale(pixels, width, height);
   return detectDominoDotsFromGray(gray, width, height);
 }
 
 /**
- * Grayscale entry point. The WebView decoder already converts to grayscale
- * (1 value per pixel), so this skips the RGBA→gray step and works directly.
- * `gray` must have width*height entries, each 0–255.
+ * Punto de entrada cuando ya se tiene un buffer en escala de grises
+ * (1 valor por píxel, 0–255). El decodificador WebView ya hace esta
+ * conversión para minimizar el tamaño del payload JSON.
  */
 export function detectDominoDotsFromGray(
   gray: Uint8ClampedArray | Uint8Array | number[],
   width: number,
   height: number,
 ): DetectionResult {
-  // Normalize to a typed array the rest of the pipeline expects.
   const grayArr =
     gray instanceof Uint8Array
       ? gray
       : Uint8Array.from(gray as ArrayLike<number>);
 
-  // 2. Gaussian blur (5×5 — more noise reduction than original 3×3)
+  // 2. Blur gaussiano 5×5
   const blurred = gaussianBlur5(grayArr, width, height);
 
-  // 3. Otsu threshold
+  // 3. Umbral de Otsu
   const threshold = otsuThreshold(blurred);
 
-  // 4. Binary: dark pixels = 1
+  // 4. Binarización: píxeles oscuros = 1
   const binary = new Uint8Array(width * height);
   for (let i = 0; i < blurred.length; i++) {
     binary[i] = blurred[i] < threshold ? 1 : 0;
   }
 
-  // 5. Connected components
+  // 5. Componentes conectados
   const { labels, componentSizes, nextLabel } = connectedComponents(
     binary,
     width,
     height,
   );
 
-  // 6. Filter blobs by area
-  //    Dots on a domino tile are small — typically 0.005%–0.4% of image area
+  // 6. Filtro por área — los puntos de una ficha son pequeños:
+  //    típicamente entre 0.005% y 0.4% del área total de la imagen.
   const imageArea = width * height;
   const minArea = Math.max(8, Math.floor(imageArea * 0.00005));
-  const maxArea = Math.floor(imageArea * 0.004); // ← tighter upper bound (was 0.006)
+  const maxArea = Math.floor(imageArea * 0.004);
 
   const validLabels = new Set<number>();
   for (let l = 1; l < nextLabel; l++) {
@@ -89,7 +98,7 @@ export function detectDominoDotsFromGray(
     };
   }
 
-  // 7. Centroids + bounding boxes → circularity
+  // 7. Centroides + bounding boxes → circularidad
   const sums: Record<number, { sx: number; sy: number; n: number }> = {};
   for (const l of validLabels) sums[l] = { sx: 0, sy: 0, n: 0 };
 
@@ -128,27 +137,27 @@ export function detectDominoDotsFromGray(
     };
   });
 
-  // 8. Circularity filter — keep round blobs (dots), reject lines/edges/text
-  //    Lowered threshold slightly (0.45) to handle worn/blurry dots
+  // 8. Filtro de circularidad — conserva blobs redondos (puntos),
+  //    rechaza líneas, bordes, texto grabado en la ficha.
   const circularDots = dotCentroids.filter((d) => (d.circularity ?? 0) > 0.45);
   const finalDots = circularDots.length >= 1 ? circularDots : dotCentroids;
 
-  // 9. Cluster into tiles — FIXED: use 7% of shorter dimension
-  //    Old: width * 0.14  → ~98px for 700px wide — too large, merges two tiles
-  //    New: shorter side * 0.07 → ~35–50px typically — keeps tiles separate
+  // 9. Clustering espacial → agrupa puntos en fichas individuales.
+  //    7% del lado más corto suele separar bien fichas adyacentes pegadas.
   const shortSide = Math.min(width, height);
   const groupDist = shortSide * 0.07;
   const rawGroups = clusterByDistance(finalDots, groupDist);
 
-  // 10. Post-process groups: a single domino has at most 6 dots per half (12 total).
-  //     If a group has >12 dots, split it — likely two tiles were merged.
+  // 10. Una ficha de dominó tiene como máximo 6 puntos por mitad (12 en total).
+  //     Si un grupo excede ese máximo, probablemente el clustering fusionó
+  //     dos fichas adyacentes — se separa por la mediana del eje más largo.
   const tileGroups = splitLargeGroups(rawGroups, finalDots, 12);
 
-  // 11. Confidence
+  // 11. Confianza global del resultado
   const totalDots = finalDots.length;
   let confidence: "high" | "medium" | "low" = "low";
   if (tileGroups.length >= 1 && totalDots <= 56) confidence = "medium";
-  if (tileGroups.length >= 1 && totalDots >= 2 && totalDots <= 42)
+  if (tileGroups.length >= 1 && totalDots >= 1 && totalDots <= 42)
     confidence = "high";
 
   return {
@@ -178,7 +187,7 @@ function toGrayscale(
   return gray;
 }
 
-/** 5×5 Gaussian blur — better noise reduction than 3×3 for real camera images */
+/** Blur gaussiano 5×5 — mejor reducción de ruido que un 3×3 en fotos reales de cámara */
 function gaussianBlur5(
   gray: Uint8Array,
   width: number,
@@ -205,7 +214,14 @@ function gaussianBlur5(
   return out;
 }
 
-function otsuThreshold(gray: Uint8Array): number {
+/**
+ * Calcula el umbral de Otsu para una imagen en escala de grises —
+ * exportada para reutilización en otros módulos que necesiten binarizar
+ * la misma imagen de forma consistente con `detectDominoDotsFromGray`
+ * (por ejemplo, `lineDetection.ts` vía la integración en `camera.tsx`),
+ * sin duplicar la lógica.
+ */
+export function otsuThreshold(gray: Uint8Array): number {
   const hist = new Array(256).fill(0);
   for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
   const total = gray.length;
@@ -299,8 +315,8 @@ function clusterByDistance(
 }
 
 /**
- * If a cluster has more dots than maxDotsPerTile, split it into sub-tiles
- * using a simple median-cut on the longest axis.
+ * Si un grupo tiene más puntos que maxDotsPerTile, lo divide en sub-fichas
+ * usando un corte por mediana sobre el eje más largo del bounding box.
  */
 function splitLargeGroups(
   groups: number[][],
@@ -313,7 +329,6 @@ function splitLargeGroups(
       result.push(group);
       continue;
     }
-    // Find bounding box of group
     let minX = Infinity,
       maxX = -Infinity,
       minY = Infinity,
@@ -327,7 +342,6 @@ function splitLargeGroups(
     }
     const spanX = maxX - minX,
       spanY = maxY - minY;
-    // Split on the longer axis at the median
     const axis: "x" | "y" = spanX >= spanY ? "x" : "y";
     const sorted = [...group].sort((a, b) => points[a][axis] - points[b][axis]);
     const mid = Math.floor(sorted.length / 2);
