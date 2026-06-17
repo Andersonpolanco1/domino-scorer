@@ -238,57 +238,119 @@ export default function CameraScreen() {
    * dado el nivel de escala actual y el tamaño real del contenedor.
    *
    * Mecánica: en el nivel más bajo (pocas fichas, usuario cerca), el
-   * rectángulo de marcadores es ALTO y ANCHO — ocupa casi todo el alto
+   * rectángulo de marcadores es ALTO — ocupa casi todo el alto
    * disponible, porque cada ficha individual se ve grande en pantalla.
    * En el nivel más alto (muchas fichas, usuario lejos), el rectángulo es
-   * más BAJO (cada ficha ocupa menos alto en pantalla a esa distancia) y
-   * más ANGOSTO en términos relativos — aunque el ancho total disponible
-   * para el bloque de fichas se reduce también, recortando el ruido
-   * lateral que pedía el usuario (menos área de mesa vacía visible a los
-   * lados cuando hay pocas fichas, ya que de cualquier forma a esa
-   * distancia hay más espacio sobrante).
+   * más BAJO (cada ficha ocupa menos alto en pantalla a esa distancia).
    *
-   * Los valores de alto relativo (40% a 70% del contenedor) y ancho
-   * relativo (90% a 55%) son una primera aproximación razonable, no una
-   * calibración definitiva — deberán ajustarse con pruebas reales en
-   * dispositivo, igual que el resto de umbrales de este módulo.
+   * El ANCHO del rectángulo y la posición de `startX` son CONSTANTES en
+   * todos los niveles — confirmado explícitamente: no deben cambiar con
+   * el nivel de escala. `startX` se ancla a un margen fijo desde el borde
+   * izquierdo de la pantalla, nunca se centra ni se desplaza.
+   *
+   * BUG CORREGIDO: la versión anterior calculaba `startX` centrando el
+   * rectángulo (`(width - rectWidthPx) / 2`) y reducía `rectWidthPx` con
+   * más fichas — esto causaba que, al subir el nivel de escala (alejarse
+   * para fotografiar más fichas), el borde izquierdo del marcador de
+   * inicio se desplazara hacia la derecha, dejando cada vez menos espacio
+   * real para las fichas en vez de más. Confirmado y reportado
+   * directamente por el usuario probando en dispositivo. Ahora `startX`
+   * es un margen fijo y `rectWidthPx` no varía con el nivel.
+   *
+   * Los valores de alto relativo del rectángulo van desde 70% del
+   * contenedor (pocas fichas) hasta un mínimo calculado dinámicamente
+   * para que `MAX_TILES_AT_FARTHEST` fichas quepan con margen de
+   * seguridad, sin importar el aspect ratio real del contenedor —
+   * confirmado con el usuario: deben caber cómodamente 15 fichas en el
+   * nivel más alejado.
+   *
+   * CORRECCIÓN 1: el valor anterior del nivel más alejado (heightRatio=0.4)
+   * NO dejaba espacio suficiente para 15 fichas en un contenedor de
+   * cámara típico en orientación vertical (más alto que ancho).
+   *
+   * CORRECCIÓN 2 (progresión pareja entre niveles): interpolar
+   * directamente `heightRatio` de forma lineal entre el extremo cercano y
+   * el extremo lejano produce un control que se SIENTE roto — porque la
+   * cantidad de fichas que caben es inversamente proporcional a
+   * `heightRatio`, no lineal. Confirmado con números reales: una
+   * interpolación lineal de heightRatio dejaba los niveles 0-2 casi sin
+   * cambio útil (1-3 fichas) y todo el salto concentrado entre el nivel 2
+   * y el 4 (de ~3 a ~16 fichas). En su lugar, se define una progresión
+   * pareja de CANTIDAD DE FICHAS OBJETIVO por nivel
+   * (`TARGET_TILES_BY_LEVEL`), y `heightRatio` se DERIVA de esa cantidad
+   * en cada nivel — así el control se siente proporcional en todo su
+   * rango, no solo en el extremo.
+   *
+   * Fórmula de derivación (ficha con proporción 2:1, ancho = alto/2): el
+   * ancho total de N fichas en fila es N × (alto de ficha / 2). Para que
+   * ese ancho quepa dentro de `rectWidthPx × (1 − margen)`, el alto de
+   * ficha en píxeles es:
+   *
+   *   tileHeightPx = (rectWidthPx × (1 − margen) × 2) / N
+   *
+   * Despejado como fracción del alto del contenedor (heightRatio), esto
+   * depende del aspect ratio real (width/height) del contenedor — por
+   * eso se calcula en cada llamada en vez de usar una constante fija que
+   * solo sería correcta para una proporción de pantalla específica.
    */
+  // Progresión pareja de cuántas fichas debería caber cómodamente en cada
+  // nivel — de esto se deriva heightRatio, no al revés. Ajustable según
+  // pruebas reales; el último valor es el confirmado explícitamente con
+  // el usuario (15 fichas en el nivel más alejado).
+  const TARGET_TILES_BY_LEVEL = [2, 4, 7, 11, 15];
+  const FARTHEST_LEVEL_MARGIN = 0.1; // 10% de aire, no usar el 100% del ancho disponible
+
   const getMarkerGeometry = useCallback(
     (level: number) => {
       const { width, height } = camLayout;
       if (width === 0 || height === 0) return null;
 
-      const t = level / (TILE_SCALE_LEVELS - 1); // 0 (pocas fichas) a 1 (muchas fichas)
+      // Ancho del rectángulo: CONSTANTE en todos los niveles (confirmado
+      // explícitamente con el usuario) — no varía con la cantidad de
+      // fichas esperada.
+      const widthRatio = 0.9;
+      const rectWidthPx = width * widthRatio;
 
-      // Alto del rectángulo de marcadores como fracción del alto del
-      // contenedor: más alto cuando hay pocas fichas (t=0), más bajo
-      // cuando hay muchas (t=1) — porque a mayor distancia física, cada
-      // ficha ocupa menos píxeles verticales en la imagen capturada.
-      const heightRatio = 0.7 - t * 0.3; // 0.7 → 0.4
-      // Ancho del rectángulo como fracción del ancho del contenedor:
-      // se reduce con más fichas para recortar ruido lateral, como pidió
-      // el usuario — aunque menos agresivamente que el alto, porque el
-      // ancho disponible para el conteo de fichas en X sigue siendo útil.
-      const widthRatio = 0.9 - t * 0.35; // 0.9 → 0.55
+      const targetTiles =
+        TARGET_TILES_BY_LEVEL[level] ??
+        TARGET_TILES_BY_LEVEL[TARGET_TILES_BY_LEVEL.length - 1];
+
+      // heightRatio derivado directamente de cuántas fichas deben caber
+      // en este nivel específico — no interpolado linealmente entre dos
+      // extremos, lo que evitaba la progresión pareja (ver nota arriba).
+      const heightRatioForTarget =
+        (rectWidthPx * (1 - FARTHEST_LEVEL_MARGIN) * 2) /
+        (targetTiles * height);
+      // Acotado a un rango razonable: no más del 75% del alto disponible
+      // (con 1-2 fichas no hace falta ocupar casi toda la pantalla) ni
+      // menos del 6% (un rectángulo más bajo que eso deja de ser una guía
+      // visual útil, incluso si matemáticamente "cabrían" más fichas).
+      const heightRatio = Math.max(0.06, Math.min(0.75, heightRatioForTarget));
 
       const tileHeightPx = height * heightRatio;
-      const rectWidthPx = width * widthRatio;
 
       const centerY = height / 2;
       const topY = centerY - tileHeightPx / 2;
       const bottomY = centerY + tileHeightPx / 2;
       const dividerY = centerY;
 
+      // Margen fijo desde el borde izquierdo — NO se centra, NO depende
+      // del nivel de escala. Esto es lo que mantiene la marca de inicio
+      // siempre en el mismo lugar visual sin importar cuántas fichas se
+      // esperen fotografiar.
       const startX = (width - rectWidthPx) / 2;
       const endX = startX + rectWidthPx;
 
       // Grosor visual de las líneas de marcador en pantalla: más fino con
-      // más fichas (t=1), para no verse desproporcionado respecto al
-      // tamaño más pequeño de cada ficha a esa distancia. Puramente
+      // más fichas (nivel alto), para no verse desproporcionado respecto
+      // al tamaño más pequeño de cada ficha a esa distancia. Puramente
       // estético — no afecta el algoritmo de detección, que ya usa
       // umbrales relativos al alto de ficha real en la imagen, no a
-      // píxeles de pantalla.
-      const lineWidthPx = 3 - t * 1.5; // 3px → 1.5px
+      // píxeles de pantalla. A diferencia de heightRatio, aquí sí tiene
+      // sentido una interpolación simple por nivel (no hay un objetivo
+      // matemático real que derivar, es solo una preferencia visual).
+      const lineLevelT = level / (TILE_SCALE_LEVELS - 1);
+      const lineWidthPx = 3 - lineLevelT * 1.5; // 3px → 1.5px
 
       return {
         startX,
