@@ -29,7 +29,7 @@ import * as ImageManipulator from "expo-image-manipulator";
 import { WebView } from "react-native-webview"; // ← NEW IMPORT
 import { router } from "expo-router";
 import { useGameStore } from "@/hooks/useGameStore";
-import { detectDominoDotsFromPixels } from "@/utils/dotDetection";
+import { detectDominoDotsFromGray } from "@/utils/dotDetection";
 import { t } from "@/constants/i18n";
 
 // ─── WebView-based pixel decoder ─────────────────────────────────────────────
@@ -46,32 +46,53 @@ import { t } from "@/constants/i18n";
 const DECODER_HTML = `
 <!DOCTYPE html>
 <html>
+<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
 <body style="margin:0;background:#000">
 <canvas id="c"></canvas>
 <script>
-window.addEventListener('message', function(e) {
-  var data = e.data;
+function send(obj) {
+  if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+    window.ReactNativeWebView.postMessage(JSON.stringify(obj));
+  }
+}
+
+function handle(raw) {
+  var data;
+  try { data = JSON.parse(raw); } catch (err) { send({ error: 'bad json' }); return; }
   if (!data || !data.base64) return;
   var img = new Image();
   img.onload = function() {
-    var c = document.getElementById('c');
-    c.width = img.width;
-    c.height = img.height;
-    var ctx = c.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-    var id = ctx.getImageData(0, 0, img.width, img.height);
-    // Transfer as regular array (Uint8ClampedArray can't be JSON-serialized directly)
-    window.ReactNativeWebView.postMessage(JSON.stringify({
-      width: img.width,
-      height: img.height,
-      pixels: Array.from(id.data)
-    }));
+    try {
+      var c = document.getElementById('c');
+      c.width = img.width;
+      c.height = img.height;
+      var ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      var id = ctx.getImageData(0, 0, img.width, img.height);
+      var rgba = id.data;
+      // Convert to grayscale here: 1 byte per pixel instead of 4.
+      // This cuts the payload to a quarter and makes JSON.stringify fast.
+      var n = img.width * img.height;
+      var gray = new Array(n);
+      for (var i = 0; i < n; i++) {
+        var r = rgba[i*4], g = rgba[i*4+1], b = rgba[i*4+2];
+        gray[i] = (r*299 + g*587 + b*114) / 1000 | 0;
+      }
+      send({ width: img.width, height: img.height, gray: gray });
+    } catch (err) {
+      send({ error: 'process failed: ' + err.message });
+    }
   };
-  img.onerror = function() {
-    window.ReactNativeWebView.postMessage(JSON.stringify({ error: 'img load failed' }));
-  };
+  img.onerror = function() { send({ error: 'img load failed' }); };
   img.src = 'data:image/jpeg;base64,' + data.base64;
-});
+}
+
+// Android delivers injected messages on document, iOS on window. Listen to both.
+document.addEventListener('message', function(e) { handle(e.data); });
+window.addEventListener('message', function(e) { handle(e.data); });
+
+// Tell React Native the page is ready to receive work.
+send({ ready: true });
 </script>
 </body>
 </html>
@@ -84,6 +105,7 @@ export default function CameraScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
   const webViewRef = useRef<any>(null);
+  const [webViewReady, setWebViewReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{
     tiles: number;
@@ -95,48 +117,54 @@ export default function CameraScreen() {
 
   // Holds a promise resolver so we can await the WebView response
   const pendingResolve = useRef<
-    ((pixels: Uint8ClampedArray, w: number, h: number) => void) | null
+    ((gray: Uint8ClampedArray, w: number, h: number) => void) | null
   >(null);
   const pendingReject = useRef<((e: Error) => void) | null>(null);
 
   const s = styles(theme);
 
-  // ── Called when WebView posts decoded pixels back ──
+  // ── Called when WebView posts a message back ──
   const onWebViewMessage = useCallback((event: any) => {
+    let msg: any;
     try {
-      const msg = JSON.parse(event.nativeEvent.data);
-      if (msg.error || !msg.pixels) {
-        pendingReject.current?.(new Error(msg.error ?? "decode failed"));
-        return;
-      }
-      const pixels = new Uint8ClampedArray(msg.pixels);
-      pendingResolve.current?.(pixels, msg.width, msg.height);
+      msg = JSON.parse(event.nativeEvent.data);
     } catch (err) {
-      pendingReject.current?.(new Error(String(err)));
+      pendingReject.current?.(new Error("bad message from decoder"));
+      pendingResolve.current = null;
+      pendingReject.current = null;
+      return;
+    }
+
+    // Handshake: the decoder page finished loading.
+    if (msg.ready) {
+      setWebViewReady(true);
+      return;
+    }
+
+    if (msg.error || !msg.gray) {
+      pendingReject.current?.(new Error(msg.error ?? "decode failed"));
+    } else {
+      // The decoder already converted to grayscale (1 value per pixel).
+      const gray = new Uint8ClampedArray(msg.gray);
+      pendingResolve.current?.(gray, msg.width, msg.height);
     }
     pendingResolve.current = null;
     pendingReject.current = null;
   }, []);
 
-  // ── Decode JPEG base64 → real RGBA pixels via WebView canvas ──
-  const decodeToPixels = (
-    base64: string,
-    width: number,
-    height: number,
-  ): Promise<Uint8ClampedArray> => {
+  // ── Decode JPEG base64 → grayscale pixel array via WebView canvas ──
+  const decodeToGray = (base64: string): Promise<Uint8ClampedArray> => {
     return new Promise((resolve, reject) => {
       pendingResolve.current = resolve;
       pendingReject.current = reject;
-      // Send base64 to the WebView
       webViewRef.current?.postMessage(JSON.stringify({ base64 }));
-      // Timeout fallback
       setTimeout(() => {
         if (pendingResolve.current) {
           pendingResolve.current = null;
           pendingReject.current = null;
           reject(new Error("WebView decode timeout"));
         }
-      }, 8000);
+      }, 15000);
     });
   };
 
@@ -179,26 +207,18 @@ export default function CameraScreen() {
       });
       if (!photo) throw new Error("no photo");
 
-      // Resize to manageable size for processing
+      // Resize to a smaller size — 500px keeps the payload light and decode fast
       const resized = await ImageManipulator.manipulateAsync(
         photo.uri,
-        [{ resize: { width: 600 } }],
+        [{ resize: { width: 500 } }],
         { format: ImageManipulator.SaveFormat.JPEG, base64: true },
       );
       if (!resized.base64) throw new Error("no base64");
 
-      // ✅ FIXED: decode via WebView canvas (real pixels, not raw JPEG bytes)
-      const pixels = await decodeToPixels(
-        resized.base64,
-        resized.width,
-        resized.height,
-      );
+      // ✅ FIXED: decode via WebView canvas, which returns grayscale pixels
+      const gray = await decodeToGray(resized.base64);
 
-      const det = detectDominoDotsFromPixels(
-        pixels,
-        resized.width,
-        resized.height,
-      );
+      const det = detectDominoDotsFromGray(gray, resized.width, resized.height);
       setResult({
         tiles: det.tilesFound,
         total: det.totalDots,
@@ -228,14 +248,17 @@ export default function CameraScreen() {
 
   return (
     <SafeAreaView style={s.safe}>
-      {/* Hidden WebView for pixel decoding — invisible, height 0 */}
+      {/* Hidden WebView for pixel decoding — invisible */}
       <WebView
         ref={webViewRef}
         style={{ width: 1, height: 1, position: "absolute", opacity: 0 }}
         source={{ html: DECODER_HTML }}
         onMessage={onWebViewMessage}
         javaScriptEnabled
+        domStorageEnabled
         originWhitelist={["*"]}
+        androidLayerType="software"
+        onError={(e) => console.warn("webview error", e.nativeEvent)}
       />
 
       <ScrollView

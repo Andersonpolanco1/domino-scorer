@@ -27,11 +27,29 @@ export function detectDominoDotsFromPixels(
   width: number,
   height: number,
 ): DetectionResult {
-  // 1. Grayscale
+  // Convert RGBA → grayscale, then run the shared core.
   const gray = toGrayscale(pixels, width, height);
+  return detectDominoDotsFromGray(gray, width, height);
+}
+
+/**
+ * Grayscale entry point. The WebView decoder already converts to grayscale
+ * (1 value per pixel), so this skips the RGBA→gray step and works directly.
+ * `gray` must have width*height entries, each 0–255.
+ */
+export function detectDominoDotsFromGray(
+  gray: Uint8ClampedArray | Uint8Array | number[],
+  width: number,
+  height: number,
+): DetectionResult {
+  // Normalize to a typed array the rest of the pipeline expects.
+  const grayArr =
+    gray instanceof Uint8Array
+      ? gray
+      : Uint8Array.from(gray as ArrayLike<number>);
 
   // 2. Gaussian blur (5×5 — more noise reduction than original 3×3)
-  const blurred = gaussianBlur5(gray, width, height);
+  const blurred = gaussianBlur5(grayArr, width, height);
 
   // 3. Otsu threshold
   const threshold = otsuThreshold(blurred);

@@ -428,6 +428,27 @@ export default function ScoreScreen() {
                       <Text style={s.keyTxt}>{d}</Text>
                     </TouchableOpacity>
                   ))}
+                  {/* Última fila: borrar (izquierda) · 0 (centro) · sumar (derecha) */}
+                  <TouchableOpacity
+                    style={[s.key, s.keyOp]}
+                    onPress={pressBackspace}
+                    onLongPress={longPressClear}
+                    delayLongPress={550}
+                    activeOpacity={0.6}
+                  >
+                    <Ionicons
+                      name="backspace-outline"
+                      size={20}
+                      color={theme.accent}
+                    />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={s.key}
+                    onPress={() => pressDigit("0")}
+                    activeOpacity={0.6}
+                  >
+                    <Text style={s.keyTxt}>0</Text>
+                  </TouchableOpacity>
                   <TouchableOpacity
                     style={[
                       s.key,
@@ -445,26 +466,6 @@ export default function ScoreScreen() {
                           ? theme.textSubtle
                           : theme.accent
                       }
-                    />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={s.key}
-                    onPress={() => pressDigit("0")}
-                    activeOpacity={0.6}
-                  >
-                    <Text style={s.keyTxt}>0</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[s.key, s.keyOp]}
-                    onPress={pressBackspace}
-                    onLongPress={longPressClear}
-                    delayLongPress={550}
-                    activeOpacity={0.6}
-                  >
-                    <Ionicons
-                      name="backspace-outline"
-                      size={20}
-                      color={theme.accent}
                     />
                   </TouchableOpacity>
                 </View>
