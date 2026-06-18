@@ -298,7 +298,11 @@ export default function SettingsScreen() {
               <View style={s.divider} />
               <View style={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 2 }}>
                 <Text style={s.rowLabel}>{t(lang, 'calMarkerSection')}</Text>
+                <Text style={s.specialDesc}>{t(lang, 'calMarkerSectionDesc')}</Text>
               </View>
+              <CalRow theme={theme} label={t(lang, 'calDividerTolerance')} value={calibration.marker.dividerToleranceRatio} step={0.05} decimals={2} min={0.05} max={0.6} onChange={v => setQualityCalibrationValue('marker', 'dividerToleranceRatio', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMaxLineThickness')} value={calibration.marker.maxThicknessRatio} step={0.02} decimals={2} min={0.05} max={0.4} onChange={v => setQualityCalibrationValue('marker', 'maxThicknessRatio', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMinLineCoverage')} value={calibration.marker.minLineCoverage} step={0.05} decimals={2} min={0.1} max={0.9} onChange={v => setQualityCalibrationValue('marker', 'minLineCoverage', v)} />
               <CalRow theme={theme} label={t(lang, 'calMinRectHeight')} value={calibration.minTileRectHeightPx} step={5} min={0} max={300} onChange={setMinTileRectHeightPx} />
 
               <View style={s.divider} />

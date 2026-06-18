@@ -3,6 +3,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { THEMES, Theme } from "@/constants/themes";
 import { Lang } from "@/constants/i18n";
 import { DEFAULT_THRESH } from "@/utils/imageQuality";
+import { DEFAULT_MARKER_TOLERANCE } from "@/utils/lineDetection";
 
 export interface HistoryEntry {
   id: string;
@@ -70,9 +71,23 @@ export interface GeminiQualityCalibration {
   minSharpness: number;
 }
 
+export interface MarkerCalibration {
+  /** Qué tan lejos puede estar la línea divisoria real de la posición del
+   * marcador (como fracción del alto de ficha) y aun así contar como
+   * alineada. Más alto = más permisivo con la puntería del usuario. */
+  dividerToleranceRatio: number;
+  /** Grosor máximo aceptado para la línea divisoria, como fracción del
+   * alto de ficha — más alto = tolera más desenfoque/inclinación. */
+  maxThicknessRatio: number;
+  /** Fracción mínima de la franja de búsqueda que debe verse oscura para
+   * contar como línea divisoria real — más bajo = más permisivo. */
+  minLineCoverage: number;
+}
+
 export interface Calibration {
   local: LocalQualityCalibration;
   gemini: GeminiQualityCalibration;
+  marker: MarkerCalibration;
   /** Alto mínimo (px, en la foto de trabajo de 700px de ancho) del
    * recuadro de marcadores para intentar la captura — ver `camera.tsx`. */
   minTileRectHeightPx: number;
@@ -85,8 +100,32 @@ export const DEFAULT_CALIBRATION: Calibration = {
   // desincronizados si alguno se edita después.
   local: { ...DEFAULT_THRESH.local } as LocalQualityCalibration,
   gemini: { ...DEFAULT_THRESH.gemini } as GeminiQualityCalibration,
+  marker: { ...DEFAULT_MARKER_TOLERANCE },
   minTileRectHeightPx: 50,
 };
+
+/**
+ * Repara en sitio una combinación min/max imposible (minMeanBrightness >=
+ * maxMeanBrightness) — ver la nota larga en `setQualityCalibrationValue`
+ * sobre por qué esa combinación específica deja el botón de captura
+ * deshabilitado para siempre, sin importar la luz real. Se llama tanto
+ * al cargar desde storage (para auto-reparar instalaciones que ya
+ * quedaron en este estado antes de existir esta guarda) como, por
+ * defensa adicional, no hace daño llamarla de nuevo en cualquier otro
+ * punto donde se construya una `Calibration`.
+ */
+function sanitizeMeanBrightnessPair<
+  T extends { minMeanBrightness: number; maxMeanBrightness: number },
+>(t: T, fallback: T): T {
+  if (t.minMeanBrightness >= t.maxMeanBrightness) {
+    return {
+      ...t,
+      minMeanBrightness: fallback.minMeanBrightness,
+      maxMeanBrightness: fallback.maxMeanBrightness,
+    };
+  }
+  return t;
+}
 
 // ─── Tipos del store ──────────────────────────────────────────────────────────
 
@@ -133,7 +172,7 @@ interface GameState {
   setAdsRemoved: (v: boolean) => void;
   setDetectionMode: (mode: DetectionMode) => void;
   setQualityCalibrationValue: (
-    profile: "local" | "gemini",
+    profile: "local" | "gemini" | "marker",
     key: string,
     value: number,
   ) => void;
@@ -297,10 +336,38 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 
   setQualityCalibrationValue: (profile, key, value) => {
-    const calibration = {
-      ...get().calibration,
-      [profile]: { ...get().calibration[profile], [key]: value },
-    };
+    const current = get().calibration[profile];
+    const next: Record<string, number> = { ...current, [key]: value };
+
+    // GUARDA CRÍTICA: minMeanBrightness y maxMeanBrightness son el único
+    // par min/max sobre la MISMA métrica entre los 7 campos calibrables.
+    // Si llegan a cruzarse (mínimo por encima del máximo, alcanzable con
+    // los steppers ya que cada uno se clampea solo contra su propio
+    // rango de 0-255, no contra el otro campo), NINGÚN valor real de
+    // brillo puede pasar nunca — el chequeo de "muy oscuro" y el de
+    // "muy claro" juntos cubren el 100% de los valores posibles, sin
+    // hueco entre ellos. Resultado: el botón de captura queda
+    // deshabilitado para siempre, sin importar la luz real, y como el
+    // valor queda persistido en AsyncStorage, sobrevive a reinstalar el
+    // APK o reiniciar la app — exactamente el bug reportado. Se separan
+    // con al menos 5 de margen, nunca dejando que se toquen.
+    const MIN_GAP = 5;
+    if (key === "minMeanBrightness" && next.maxMeanBrightness !== undefined) {
+      next.minMeanBrightness = Math.min(
+        next.minMeanBrightness,
+        next.maxMeanBrightness - MIN_GAP,
+      );
+    } else if (
+      key === "maxMeanBrightness" &&
+      next.minMeanBrightness !== undefined
+    ) {
+      next.maxMeanBrightness = Math.max(
+        next.maxMeanBrightness,
+        next.minMeanBrightness + MIN_GAP,
+      );
+    }
+
+    const calibration = { ...get().calibration, [profile]: next };
     set({ calibration });
     persist({ ...get(), calibration });
   },
@@ -318,6 +385,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const calibration: Calibration = {
       local: { ...DEFAULT_CALIBRATION.local },
       gemini: { ...DEFAULT_CALIBRATION.gemini },
+      marker: { ...DEFAULT_CALIBRATION.marker },
       minTileRectHeightPx: DEFAULT_CALIBRATION.minTileRectHeightPx,
     };
     set({ calibration });
@@ -368,11 +436,15 @@ export const useGameStore = create<GameState>((set, get) => ({
           // vez de quedar `undefined` y romper los cálculos en
           // `imageQuality.ts`.
           calibration: {
-            local: { ...DEFAULT_CALIBRATION.local, ...s.calibration?.local },
-            gemini: {
-              ...DEFAULT_CALIBRATION.gemini,
-              ...s.calibration?.gemini,
-            },
+            local: sanitizeMeanBrightnessPair(
+              { ...DEFAULT_CALIBRATION.local, ...s.calibration?.local },
+              DEFAULT_CALIBRATION.local,
+            ),
+            gemini: sanitizeMeanBrightnessPair(
+              { ...DEFAULT_CALIBRATION.gemini, ...s.calibration?.gemini },
+              DEFAULT_CALIBRATION.gemini,
+            ),
+            marker: { ...DEFAULT_CALIBRATION.marker, ...s.calibration?.marker },
             minTileRectHeightPx:
               typeof s.calibration?.minTileRectHeightPx === "number"
                 ? s.calibration.minTileRectHeightPx

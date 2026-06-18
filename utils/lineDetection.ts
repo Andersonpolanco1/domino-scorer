@@ -493,6 +493,23 @@ export interface TileLayoutFailure {
  * Devuelve la razón del fallo en cualquier paso — el llamador (la UI de
  * la cámara) decide cómo comunicar cada caso al usuario.
  */
+export interface MarkerToleranceOptions {
+  minLineCoverage: number;
+  maxThicknessRatio: number;
+  dividerToleranceRatio: number;
+}
+
+// Valores de fábrica — única fuente de verdad, importada desde
+// useGameStore.ts para construir `DEFAULT_CALIBRATION` sin repetir estos
+// números ahí (mismo principio aplicado en imageQuality.ts: un archivo
+// con varios lugares que repiten "el mismo" valor de fábrica es como
+// terminó pasando el bug de sombra/contraste que se corrigió antes).
+export const DEFAULT_MARKER_TOLERANCE: MarkerToleranceOptions = {
+  minLineCoverage: 0.45,
+  maxThicknessRatio: 0.18,
+  dividerToleranceRatio: 0.3,
+};
+
 export function detectTileLayout(
   gray: Uint8Array,
   binary: Uint8Array,
@@ -510,10 +527,31 @@ export function detectTileLayout(
     maxTiles?: number;
   },
 ): TileLayoutResult | TileLayoutFailure {
+  // AJUSTE (uso real de campo, no solo de prueba): los valores originales
+  // — calibrados con casos sintéticos generados a propósito, no con un
+  // usuario sosteniendo el teléfono a mano — exigían una alineación de
+  // los 4 marcadores más precisa de la que es razonable esperar de un
+  // pulso humano normal. Igual que con `imageQuality.ts`, este es un
+  // trade-off real, no una mejora gratis: relajar estos tres valores
+  // significa aceptar fotos con la línea divisoria un poco más
+  // desalineada, más gruesa/borrosa, o con menos cobertura limpia de lo
+  // que se consideraba válido antes — a cambio de que la app sea
+  // utilizable a mano. El riesgo está acotado por una segunda capa de
+  // seguridad que ya existe más adelante en el pipeline: aunque la
+  // geometría pase con un encuadre algo imperfecto, `tileIdentification.ts`
+  // sigue exigiendo una coincidencia EXACTA contra los 7 patrones
+  // oficiales de puntos — una geometría mal leída tiende a no encajar en
+  // ningún patrón válido y se marca `matched:false`, en vez de devolver
+  // un número con apariencia de certeza.
   const opts = {
-    minLineCoverage: options?.minLineCoverage ?? 0.6,
-    maxThicknessRatio: options?.maxThicknessRatio ?? 0.1,
-    dividerToleranceRatio: options?.dividerToleranceRatio ?? 0.15,
+    minLineCoverage:
+      options?.minLineCoverage ?? DEFAULT_MARKER_TOLERANCE.minLineCoverage,
+    maxThicknessRatio:
+      options?.maxThicknessRatio ??
+      DEFAULT_MARKER_TOLERANCE.maxThicknessRatio,
+    dividerToleranceRatio:
+      options?.dividerToleranceRatio ??
+      DEFAULT_MARKER_TOLERANCE.dividerToleranceRatio,
     minContentStrength: options?.minContentStrength ?? 18,
     backgroundStripHeightPx: options?.backgroundStripHeightPx ?? 10,
     maxTiles: options?.maxTiles ?? 40,
@@ -523,9 +561,11 @@ export function detectTileLayout(
   const tileWidthPx = tileHeightPx / 2; // proporción 2:1 fija de la especificación
 
   // Paso 1 — verificar la línea divisoria, buscando solo en una franja
-  // angosta de ancho razonable (una ficha y media de margen) cerca de
-  // startX, no en todo el rectángulo guía.
-  const searchWidthPx = tileWidthPx * 1.5;
+  // angosta cerca de startX. Ancho de búsqueda ampliado (antes 1.5
+  // anchos de ficha, ahora 2) — el mismo espíritu: más margen para que
+  // un `startX` no perfectamente alineado por el usuario no excluya la
+  // línea real de la franja buscada.
+  const searchWidthPx = tileWidthPx * 2;
   const verification = verifyDividerLine(
     binary,
     width,

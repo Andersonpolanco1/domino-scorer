@@ -615,7 +615,23 @@ export default function ScoreScreen() {
               </>
             )}
             <TouchableOpacity
-              style={[s.btnPrimaryFull, { width: "100%", marginTop: 4 }]}
+              style={[
+                s.btnPrimaryFull,
+                // flex: 0 anula el `flex: 1` de btnPrimaryFull — ese valor
+                // tiene sentido en los OTROS usos de este estilo (dos
+                // botones repartiéndose una fila a la mitad cada uno),
+                // pero aquí el botón está solo dentro de un modal en
+                // columna, sin nadie con quien repartir el espacio. Sin
+                // anularlo, el alto del botón queda indefinido para el
+                // motor de layout (Yoga) y puede resolverse de forma
+                // inconsistente entre dispositivos — esto es lo que
+                // causaba que el texto del botón no se viera en algunas
+                // tablets Android (el botón se renderiza, pero estirado de
+                // forma que el texto queda fuera del área visible).
+                // `width: "100%"` ya logra el ancho completo sin ayuda de
+                // flex.
+                { flex: 0, width: "100%", marginTop: 4 },
+              ]}
               onPress={() => {
                 archiveAndReset("win", winnerIdx as 0 | 1);
                 setWinnerIdx(null);

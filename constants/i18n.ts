@@ -66,7 +66,7 @@ export const STRINGS = {
     retry: "Volver a intentar",
     cameraPermission: "Permiso de cámara",
     cameraPermissionSub:
-      "Necesitamos acceso a tu cámara para detectar los puntos de las fichas.",
+      "Necesitamos acceso a tu cámara para detectar los puntos de las fichas. Si Android te pregunta, elige \"Mientras se usa la app\" — con \"Solo esta vez\" el permiso se vence al salir y hay que concederlo de nuevo en cada partida.",
     grantPermission: "Dar permiso",
     statsTitle: "Estadísticas",
     totalGames: "Partidas",
@@ -164,6 +164,11 @@ export const STRINGS = {
     calGeminiProfileDesc:
       "Más permisivo por diseño: Gemini interpreta la escena completa, no necesita tanta señal como el algoritmo local.",
     calMarkerSection: "Marcador / encuadre",
+    calMarkerSectionDesc:
+      "Qué tan estricta es la validación de los 4 marcadores antes de capturar (solo modo local). Más permisivo = más fácil de encuadrar, a costa de aceptar fotos un poco menos alineadas.",
+    calDividerTolerance: "Tolerancia de alineación vertical",
+    calMaxLineThickness: "Grosor máx. de línea divisoria",
+    calMinLineCoverage: "Cobertura mín. de línea divisoria",
     calMinBrightness: "Brillo mínimo",
     calMaxBrightness: "Brillo máximo",
     calMaxSaturated: "% píxeles saturados máx.",
@@ -176,6 +181,8 @@ export const STRINGS = {
     calResetConfirmTitle: "¿Restaurar calibración?",
     calResetConfirmMsg:
       "Se perderán los valores ajustados y volverán a los de fábrica.",
+    diagIntro:
+      "Valor real medido ahora vs. tu umbral configurado. Toca ✓ para fijar el umbral desde la condición actual, con margen ya aplicado.",
     geminiErrorTitle: "Error con Gemini",
     geminiErrorNoApiKey:
       "No se configuró la clave de API de Gemini (EXPO_PUBLIC_GEMINI_API_KEY).",
@@ -253,7 +260,7 @@ export const STRINGS = {
     retry: "Try again",
     cameraPermission: "Camera permission",
     cameraPermissionSub:
-      "We need camera access to detect the pips on the tiles.",
+      'We need camera access to detect the pips on the tiles. If Android asks, choose "While using the app" — with "Only this time" the permission expires when you leave and you\'ll have to grant it again every game.',
     grantPermission: "Grant permission",
     statsTitle: "Statistics",
     totalGames: "Games",
@@ -351,6 +358,11 @@ export const STRINGS = {
     calGeminiProfileDesc:
       "More permissive by design: Gemini reads the whole scene, it doesn't need as much signal as the local algorithm.",
     calMarkerSection: "Marker / framing",
+    calMarkerSectionDesc:
+      "How strict the 4-marker validation is before capturing (local mode only). More permissive = easier to frame, at the cost of accepting slightly less aligned photos.",
+    calDividerTolerance: "Vertical alignment tolerance",
+    calMaxLineThickness: "Max divider line thickness",
+    calMinLineCoverage: "Min divider line coverage",
     calMinBrightness: "Min brightness",
     calMaxBrightness: "Max brightness",
     calMaxSaturated: "Max saturated pixels %",
@@ -363,6 +375,8 @@ export const STRINGS = {
     calResetConfirmTitle: "Restore calibration?",
     calResetConfirmMsg:
       "Your adjusted values will be lost and reset to factory defaults.",
+    diagIntro:
+      "Real value measured right now vs. your configured threshold. Tap ✓ to set the threshold from the current condition, with margin already applied.",
     geminiErrorTitle: "Gemini error",
     geminiErrorNoApiKey: "Gemini API key not configured (EXPO_PUBLIC_GEMINI_API_KEY).",
     geminiErrorNetwork: "Could not connect to Gemini. Check your internet connection.",

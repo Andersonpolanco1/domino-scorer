@@ -33,8 +33,10 @@ import {
   ActivityIndicator,
   Image,
   ScrollView,
+  AppState,
 } from "react-native";
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { Ionicons } from "@expo/vector-icons";
@@ -250,6 +252,100 @@ const QUALITY_SAMPLE_WIDTH = 120;
 // `calibration.minTileRectHeightPx` (useGameStore.ts) para poder
 // ajustarlo desde Settings sin rebuild. Ver uso en `captureWithGemini`.
 
+/**
+ * Una fila del panel de diagnóstico de calibración: muestra el valor
+ * REAL medido en este instante junto al umbral configurado, con un punto
+ * de color (pasa/no pasa) y un botón para fijar el umbral directamente
+ * desde ese valor real (con margen de seguridad ya aplicado) — pensado
+ * para resolver "no sé qué número poner en cada campo": en vez de
+ * adivinar con los +/- de Settings, se apunta la cámara a la condición
+ * real que se quiere soportar y se toca el botón ahí mismo.
+ */
+type DiagRowSpec = {
+  calKey: string;
+  label: string;
+  metricValue: number | null;
+  metricDisplay: string;
+  thresholdDisplay: string;
+  pass: boolean | null;
+  decimals: number;
+  margin: number;
+  kind: "min" | "max";
+};
+
+function DiagRow({
+  theme,
+  row,
+  onApply,
+}: {
+  theme: any;
+  row: DiagRowSpec;
+  onApply: (row: DiagRowSpec) => void;
+}) {
+  const dotColor =
+    row.pass === null ? theme.textMuted : row.pass ? theme.success : theme.team2;
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        paddingVertical: 6,
+        gap: 8,
+      }}
+    >
+      <View
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          backgroundColor: dotColor,
+        }}
+      />
+      <Text style={{ flex: 1, fontSize: 12, color: theme.text }}>
+        {row.label}
+      </Text>
+      <Text
+        style={{
+          fontSize: 12,
+          fontWeight: "700",
+          color: theme.text,
+          minWidth: 42,
+          textAlign: "right",
+        }}
+      >
+        {row.metricDisplay}
+      </Text>
+      <Text
+        style={{
+          fontSize: 11,
+          color: theme.textMuted,
+          minWidth: 56,
+          textAlign: "right",
+        }}
+      >
+        {row.thresholdDisplay}
+      </Text>
+      <TouchableOpacity
+        disabled={row.metricValue === null}
+        onPress={() => onApply(row)}
+        style={{
+          width: 26,
+          height: 26,
+          borderRadius: 7,
+          borderWidth: 1,
+          borderColor: theme.border,
+          backgroundColor: theme.cardAlt,
+          alignItems: "center",
+          justifyContent: "center",
+          opacity: row.metricValue === null ? 0.4 : 1,
+        }}
+      >
+        <Ionicons name="checkmark" size={14} color={theme.accent} />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 export default function CameraScreen() {
   const {
     theme,
@@ -259,8 +355,44 @@ export default function CameraScreen() {
     detectionMode,
     setDetectionMode,
     calibration,
+    setQualityCalibrationValue,
   } = useGameStore();
   const [permission, requestPermission] = useCameraPermissions();
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+
+  // ── Re-chequeo activo del permiso de cámara ──
+  //
+  // `useCameraPermissions()` por sí solo refleja el estado del permiso al
+  // momento de montar el hook — si Android lo revoca en silencio DURANTE
+  // la sesión (el caso real: el usuario concedió "Solo esta vez", que
+  // expira al salir de la app), `permission.granted` se queda con el
+  // valor viejo en el estado de React para siempre, mientras esta misma
+  // pantalla siga montada. El resultado: la cámara sigue mostrándose como
+  // si nada, pero cada `takePictureAsync` falla en silencio (atrapado por
+  // el try/catch de `sampleQualityOnce`, solo visible en la consola) —
+  // exactamente el bug reportado ("dejó de capturar, sin aviso, ni
+  // reinstalando ni reiniciando el dispositivo lo arregla", porque cada
+  // vez que se vuelve a abrir la app, Android pide el permiso de nuevo y
+  // si se elige otra vez "Solo esta vez", el ciclo se repite).
+  //
+  // `requestPermission()` es seguro de llamar repetidamente: si el
+  // permiso YA está concedido de forma estable, el sistema operativo lo
+  // resuelve de inmediato sin mostrar ningún diálogo — solo vuelve a
+  // preguntar cuando de verdad ya no está concedido. Por eso es seguro
+  // dispararlo en cada vuelta a foreground/foco, no solo al montar.
+  useFocusEffect(
+    useCallback(() => {
+      requestPermission();
+    }, [requestPermission]),
+  );
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") requestPermission();
+    });
+    return () => sub.remove();
+  }, [requestPermission]);
+
   const cameraRef = useRef<CameraView>(null);
   const webViewRef = useRef<any>(null);
   const [webViewReady, setWebViewReady] = useState(false);
@@ -975,6 +1107,11 @@ export default function CameraScreen() {
             mapped.topY,
             mapped.dividerY,
             mapped.bottomY,
+            {
+              minLineCoverage: calibration.marker.minLineCoverage,
+              maxThicknessRatio: calibration.marker.maxThicknessRatio,
+              dividerToleranceRatio: calibration.marker.dividerToleranceRatio,
+            },
           );
 
           if ("reason" in layout) {
@@ -1054,6 +1191,129 @@ export default function CameraScreen() {
   const retry = () => {
     setResult(null);
     setQuality(null);
+  };
+
+  // ── Panel de diagnóstico de calibración ──
+  //
+  // Construye las filas a partir de las métricas YA calculadas en cada
+  // ciclo de muestreo (`quality.metrics`) — no agrega ningún cómputo
+  // nuevo, solo expone lo que `analyzeImageQuality` ya mide pero que
+  // hasta ahora solo se usaba internamente para decidir ok/no-ok, nunca
+  // se mostraba en números.
+  const diagProfileCal = calibration[detectionMode];
+  const m = quality?.metrics ?? null;
+  const fmt = (v: number, d: number) => v.toFixed(d);
+  const diagRows: DiagRowSpec[] = [
+    {
+      calKey: "minMeanBrightness",
+      label: t(lang, "calMinBrightness"),
+      metricValue: m?.meanBrightness ?? null,
+      metricDisplay: m ? fmt(m.meanBrightness, 0) : "—",
+      thresholdDisplay: `≥ ${diagProfileCal.minMeanBrightness}`,
+      pass: m ? m.meanBrightness >= diagProfileCal.minMeanBrightness : null,
+      decimals: 0,
+      margin: 10,
+      kind: "min",
+    },
+    {
+      calKey: "maxMeanBrightness",
+      label: t(lang, "calMaxBrightness"),
+      metricValue: m?.meanBrightness ?? null,
+      metricDisplay: m ? fmt(m.meanBrightness, 0) : "—",
+      thresholdDisplay: `≤ ${diagProfileCal.maxMeanBrightness}`,
+      pass: m ? m.meanBrightness <= diagProfileCal.maxMeanBrightness : null,
+      decimals: 0,
+      margin: 10,
+      kind: "max",
+    },
+    {
+      calKey: "maxDarkRatio",
+      label: t(lang, "calMaxDark"),
+      metricValue: m?.darkRatio ?? null,
+      metricDisplay: m ? fmt(m.darkRatio, 2) : "—",
+      thresholdDisplay: `≤ ${diagProfileCal.maxDarkRatio.toFixed(2)}`,
+      pass: m ? m.darkRatio <= diagProfileCal.maxDarkRatio : null,
+      decimals: 2,
+      margin: 0.05,
+      kind: "max",
+    },
+    {
+      calKey: "maxSaturatedRatio",
+      label: t(lang, "calMaxSaturated"),
+      metricValue: m?.saturatedRatio ?? null,
+      metricDisplay: m ? fmt(m.saturatedRatio, 2) : "—",
+      thresholdDisplay: `≤ ${diagProfileCal.maxSaturatedRatio.toFixed(2)}`,
+      pass: m ? m.saturatedRatio <= diagProfileCal.maxSaturatedRatio : null,
+      decimals: 2,
+      margin: 0.05,
+      kind: "max",
+    },
+    {
+      calKey: "minSharpness",
+      label: t(lang, "calMinSharpness"),
+      metricValue: m?.sharpness ?? null,
+      metricDisplay: m ? fmt(m.sharpness, 1) : "—",
+      thresholdDisplay: `≥ ${diagProfileCal.minSharpness.toFixed(1)}`,
+      pass: m ? m.sharpness >= diagProfileCal.minSharpness : null,
+      decimals: 1,
+      margin: 0.5,
+      kind: "min",
+    },
+  ];
+  // Sombra desigual y contraste solo se evalúan en el perfil local (ver
+  // razonamiento en imageQuality.ts) — mostrarlas en modo Gemini sería
+  // mostrar números que no tienen ningún efecto real en esa decisión.
+  if (detectionMode === "local") {
+    diagRows.push(
+      {
+        calKey: "minContrastRange",
+        label: t(lang, "calMinContrast"),
+        metricValue: m?.contrastRange ?? null,
+        metricDisplay: m ? fmt(m.contrastRange, 0) : "—",
+        thresholdDisplay: `≥ ${calibration.local.minContrastRange}`,
+        pass: m
+          ? m.contrastRange >= calibration.local.minContrastRange
+          : null,
+        decimals: 0,
+        margin: 5,
+        kind: "min",
+      },
+      {
+        calKey: "maxShadowUnevenness",
+        label: t(lang, "calMaxShadow"),
+        metricValue: m?.shadowUnevenness ?? null,
+        metricDisplay: m ? fmt(m.shadowUnevenness, 0) : "—",
+        thresholdDisplay: `≤ ${calibration.local.maxShadowUnevenness}`,
+        pass: m
+          ? m.shadowUnevenness <= calibration.local.maxShadowUnevenness
+          : null,
+        decimals: 0,
+        margin: 10,
+        kind: "max",
+      },
+    );
+  }
+
+  const applyDiagRow = (row: DiagRowSpec) => {
+    if (row.metricValue === null) return;
+    // El margen de seguridad es deliberado: fijar el umbral EXACTAMENTE
+    // en el valor medido ahora dejaría la condición actual justo al
+    // límite — cualquier variación mínima (la mano se mueve, una nube
+    // pasa) volvería a bloquear. El margen da un colchón real.
+    const raw =
+      row.kind === "min"
+        ? row.metricValue - row.margin
+        : row.metricValue + row.margin;
+    const factor = Math.pow(10, row.decimals);
+    const rounded = Math.round(raw * factor) / factor;
+    setQualityCalibrationValue(
+      row.calKey === "minContrastRange" || row.calKey === "maxShadowUnevenness"
+        ? "local"
+        : detectionMode,
+      row.calKey,
+      rounded,
+    );
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
   // ── Indicador de calidad: color + mensaje ──
@@ -1274,7 +1534,55 @@ export default function CameraScreen() {
               {sampling && (
                 <ActivityIndicator size="small" color={qualityColor} />
               )}
+              <TouchableOpacity
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setShowDiagnostics((v) => !v);
+                }}
+                style={{ padding: 4 }}
+              >
+                <Ionicons
+                  name="speedometer-outline"
+                  size={18}
+                  color={showDiagnostics ? theme.accent : theme.textMuted}
+                />
+              </TouchableOpacity>
             </View>
+
+            {/* Panel de diagnóstico — TEMPORAL, herramienta de
+                calibración para desarrollo, no para el usuario final (ver
+                conversación de diseño: la calibración fina con 13 números
+                técnicos no es algo que deba quedar expuesto en producción,
+                esto es para resolver "no sé qué valor poner" mientras se
+                ajusta en campo). Muestra el valor REAL medido ahora mismo
+                junto al umbral configurado — calibrar viendo números
+                reales en vez de adivinar con los +/- de Settings. */}
+            {showDiagnostics && (
+              <View
+                style={{
+                  marginTop: 8,
+                  padding: 12,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                  backgroundColor: theme.cardAlt,
+                }}
+              >
+                <Text
+                  style={{ fontSize: 11, color: theme.textMuted, marginBottom: 6 }}
+                >
+                  {t(lang, "diagIntro")}
+                </Text>
+                {diagRows.map((row) => (
+                  <DiagRow
+                    key={row.calKey + row.kind}
+                    theme={theme}
+                    row={row}
+                    onApply={applyDiagRow}
+                  />
+                ))}
+              </View>
+            )}
 
             {/* Tips */}
             <View style={s.tipsCard}>
