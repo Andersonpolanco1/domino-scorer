@@ -2,6 +2,7 @@ import { create } from "zustand";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { THEMES, Theme } from "@/constants/themes";
 import { Lang } from "@/constants/i18n";
+import { DEFAULT_THRESH } from "@/utils/imageQuality";
 
 export interface HistoryEntry {
   id: string;
@@ -32,6 +33,61 @@ function todayKey(): string {
   return new Date().toISOString().slice(0, 10); // "2025-06-16"
 }
 
+// ─── Modo de detección por cámara (TEMPORAL, solo desarrollo) ─────────────────
+//
+// Permite alternar entre el algoritmo de visión computacional 100% local
+// (todavía en afinamiento) y la API de Gemini (usada para poder probar el
+// flujo completo de la app en despliegue mientras el algoritmo local
+// madura). Esto se moverá a una variable de entorno en el futuro — por
+// ahora vive en Settings para poder cambiarlo sin rebuild.
+export type DetectionMode = "local" | "gemini";
+
+// ─── Calibración de captura (TEMPORAL, solo desarrollo) ───────────────────
+//
+// Mueve los umbrales de `imageQuality.ts` (antes hardcodeados en el
+// código) y el alto mínimo de recuadro de `camera.tsx` a algo editable
+// desde Settings, persistido — para poder calibrar en campo (probando en
+// distintas luces/dispositivos reales) sin tener que hacer un build
+// nuevo cada vez que un valor no calza. Los defaults de fábrica viven en
+// `utils/imageQuality.ts` (`DEFAULT_THRESH`) y se copian aquí al
+// inicializar — este store es la fuente de verdad mientras la app corre,
+// no `imageQuality.ts`.
+export interface LocalQualityCalibration {
+  minMeanBrightness: number;
+  maxMeanBrightness: number;
+  maxSaturatedRatio: number;
+  maxDarkRatio: number;
+  minContrastRange: number;
+  maxShadowUnevenness: number;
+  minSharpness: number;
+}
+
+export interface GeminiQualityCalibration {
+  minMeanBrightness: number;
+  maxMeanBrightness: number;
+  maxSaturatedRatio: number;
+  maxDarkRatio: number;
+  minSharpness: number;
+}
+
+export interface Calibration {
+  local: LocalQualityCalibration;
+  gemini: GeminiQualityCalibration;
+  /** Alto mínimo (px, en la foto de trabajo de 700px de ancho) del
+   * recuadro de marcadores para intentar la captura — ver `camera.tsx`. */
+  minTileRectHeightPx: number;
+}
+
+export const DEFAULT_CALIBRATION: Calibration = {
+  // Se construyen a partir de `DEFAULT_THRESH` (imageQuality.ts) en vez de
+  // repetir los números aquí — una sola fuente de verdad para los
+  // valores de fábrica, sin riesgo de que este archivo y ese queden
+  // desincronizados si alguno se edita después.
+  local: { ...DEFAULT_THRESH.local } as LocalQualityCalibration,
+  gemini: { ...DEFAULT_THRESH.gemini } as GeminiQualityCalibration,
+  minTileRectHeightPx: 50,
+};
+
 // ─── Tipos del store ──────────────────────────────────────────────────────────
 
 interface GameState {
@@ -45,6 +101,8 @@ interface GameState {
   lang: Lang;
   isPro: boolean;
   adsRemoved: boolean;
+  detectionMode: DetectionMode;
+  calibration: Calibration;
 
   // Scan quota (free tier)
   dailyScanCount: number; // scans usados hoy
@@ -73,6 +131,14 @@ interface GameState {
   setLang: (lang: Lang) => void;
   setPro: (v: boolean) => void;
   setAdsRemoved: (v: boolean) => void;
+  setDetectionMode: (mode: DetectionMode) => void;
+  setQualityCalibrationValue: (
+    profile: "local" | "gemini",
+    key: string,
+    value: number,
+  ) => void;
+  setMinTileRectHeightPx: (value: number) => void;
+  resetCalibration: () => void;
   setCapicua: (enabled: boolean, points?: number) => void;
   setPase: (enabled: boolean, points?: number) => void;
   loadFromStorage: () => Promise<void>;
@@ -98,6 +164,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   lang: "es",
   isPro: false,
   adsRemoved: false,
+  detectionMode: "local",
+  calibration: DEFAULT_CALIBRATION,
   dailyScanCount: 0,
   lastScanDate: "",
   capicuaEnabled: true,
@@ -223,6 +291,38 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ adsRemoved: v });
     persist({ ...get(), adsRemoved: v });
   },
+  setDetectionMode: (mode) => {
+    set({ detectionMode: mode });
+    persist({ ...get(), detectionMode: mode });
+  },
+
+  setQualityCalibrationValue: (profile, key, value) => {
+    const calibration = {
+      ...get().calibration,
+      [profile]: { ...get().calibration[profile], [key]: value },
+    };
+    set({ calibration });
+    persist({ ...get(), calibration });
+  },
+
+  setMinTileRectHeightPx: (value) => {
+    const calibration = { ...get().calibration, minTileRectHeightPx: value };
+    set({ calibration });
+    persist({ ...get(), calibration });
+  },
+
+  resetCalibration: () => {
+    // Copia profunda — sin esto, `calibration` apuntaría al MISMO objeto
+    // `DEFAULT_CALIBRATION` exportado, y una edición posterior mutaría el
+    // default "de fábrica" en memoria para el resto de la sesión.
+    const calibration: Calibration = {
+      local: { ...DEFAULT_CALIBRATION.local },
+      gemini: { ...DEFAULT_CALIBRATION.gemini },
+      minTileRectHeightPx: DEFAULT_CALIBRATION.minTileRectHeightPx,
+    };
+    set({ calibration });
+    persist({ ...get(), calibration });
+  },
 
   setCapicua: (enabled, points) => {
     set({
@@ -257,6 +357,27 @@ export const useGameStore = create<GameState>((set, get) => ({
           lang: s.lang ?? "es",
           isPro: s.isPro ?? false,
           adsRemoved: s.adsRemoved ?? false,
+          // Fallback seguro a 'local': si el valor guardado no es uno de
+          // los dos modos válidos (dato corrupto, versión vieja del
+          // storage, etc.), nunca debe arrancar en un modo desconocido.
+          detectionMode: s.detectionMode === "gemini" ? "gemini" : "local",
+          // Fusión campo por campo con los defaults, no un reemplazo
+          // completo del objeto guardado — así, si en el futuro se agrega
+          // un nuevo umbral calibrable, una instalación con un storage
+          // viejo (que no lo tiene) lo recibe con su valor de fábrica en
+          // vez de quedar `undefined` y romper los cálculos en
+          // `imageQuality.ts`.
+          calibration: {
+            local: { ...DEFAULT_CALIBRATION.local, ...s.calibration?.local },
+            gemini: {
+              ...DEFAULT_CALIBRATION.gemini,
+              ...s.calibration?.gemini,
+            },
+            minTileRectHeightPx:
+              typeof s.calibration?.minTileRectHeightPx === "number"
+                ? s.calibration.minTileRectHeightPx
+                : DEFAULT_CALIBRATION.minTileRectHeightPx,
+          },
           dailyScanCount: s.dailyScanCount ?? 0,
           lastScanDate: s.lastScanDate ?? "",
           capicuaEnabled: s.capicuaEnabled ?? true,
@@ -378,6 +499,8 @@ async function persist(state: Partial<GameState>) {
         lang: state.lang,
         isPro: state.isPro,
         adsRemoved: state.adsRemoved,
+        detectionMode: state.detectionMode,
+        calibration: state.calibration,
         dailyScanCount: state.dailyScanCount,
         lastScanDate: state.lastScanDate,
         capicuaEnabled: state.capicuaEnabled,

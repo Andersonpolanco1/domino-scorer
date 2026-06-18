@@ -110,16 +110,21 @@ domino-scorer/
 │   └── (tabs)/
 │       ├── _layout.tsx      # Tab bar con iconos
 │       ├── index.tsx        # 📊 Pantalla de marcador
-│       ├── camera.tsx       # 📷 Detector de fichas por cámara
+│       ├── camera.tsx       # 📷 Detector de fichas por cámara (local + Gemini)
 │       ├── history.tsx      # 📋 Historial de jugadas
-│       └── settings.tsx     # ⚙️ Configuración y temas
+│       └── settings.tsx     # ⚙️ Configuración, temas y modo de detección
 ├── components/              # Componentes reutilizables (expandir aquí)
 ├── hooks/
 │   └── useGameStore.ts      # Estado global con Zustand + AsyncStorage
 ├── utils/
-│   └── dotDetection.ts      # Algoritmo CV de detección de puntos
+│   ├── dotDetection.ts      # Algoritmo CV local de detección de puntos
+│   ├── lineDetection.ts     # Validación geométrica de los 4 marcadores (modo local)
+│   ├── tileIdentification.ts # Identifica el valor (ej. "4-6") de cada ficha (modo local)
+│   ├── imageQuality.ts      # Validación de calidad de imagen (ambos modos)
+│   └── geminiDetection.ts   # Llamada a la API de Gemini (modo alternativo)
 ├── constants/
 │   └── themes.ts            # 8 temas de colores
+├── .env.example              # Plantilla para EXPO_PUBLIC_GEMINI_API_KEY
 ├── app.json                 # Config de Expo
 └── eas.json                 # Config de EAS Build
 ```
@@ -127,6 +132,10 @@ domino-scorer/
 ---
 
 ## Cómo funciona la detección por cámara
+
+La app soporta dos motores de detección, intercambiables desde **Ajustes → Modo de detección (desarrollo)** mientras se afina el algoritmo local. En ambos casos, antes de procesar nada se valida la calidad de la imagen (`utils/imageQuality.ts`: luz, sombra, contraste, nitidez) y se usa el mismo recuadro de 4 marcadores en pantalla para recortar la región de interés.
+
+### Modo local (por defecto)
 
 El algoritmo en `utils/dotDetection.ts` usa visión computacional pura en JavaScript:
 
@@ -137,44 +146,25 @@ El algoritmo en `utils/dotDetection.ts` usa visión computacional pura en JavaSc
 5. **Filtro por área** — Descarta manchas demasiado pequeñas (ruido) o grandes (no son puntos)
 6. **Clustering** — Agrupa puntos cercanos para identificar fichas individuales
 
+Además, `utils/lineDetection.ts` verifica que el encuadre real coincida con los 4 marcadores (rechaza la foto si no) y `utils/tileIdentification.ts` identifica el valor de cada ficha individual (ej. "4-6"), no solo el total.
+
 **Para mejores resultados:**
 - Buena iluminación (luz natural o lampara directa)
 - Fondo de color sólido que contraste con las fichas
 - Fichas planas sobre la mesa
 - Cámara perpendicular a las fichas (desde arriba)
 
----
+### Modo Gemini (alternativo, temporal)
 
-## Expandir con Claude Vision API (opcional)
+Pensado para poder probar el flujo completo de la app en despliegue mientras el algoritmo local termina de afinarse. Envía la imagen recortada (con los mismos marcadores, pero sin la validación geométrica estricta del modo local) a la API de Gemini, que devuelve solo el **total de puntos** — no el desglose ficha por ficha.
 
-Si quieres más precisión, puedes reemplazar el algoritmo local con la API de Claude.
-Costo estimado: ~$0.005 por foto.
+Para activarlo:
 
-En `app/(tabs)/camera.tsx`, reemplaza la llamada a `detectDominoDotsFromPixels` con:
+1. Copia `.env.example` a `.env` y completa `EXPO_PUBLIC_GEMINI_API_KEY` con una clave de [Google AI Studio](https://aistudio.google.com/app/apikey).
+2. Reinicia el servidor de Metro (`npx expo start`) para que recoja la nueva variable de entorno.
+3. En la app: Ajustes → Modo de detección → Gemini.
 
-```typescript
-const response = await fetch('https://api.anthropic.com/v1/messages', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'x-api-key': TU_API_KEY,
-    'anthropic-version': '2023-06-01',
-  },
-  body: JSON.stringify({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 100,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
-        { type: 'text', text: 'Cuenta exactamente cuántos puntos/pepas hay en total en todas las fichas de dominó visibles. Responde SOLO con el número entero.' }
-      ]
-    }]
-  })
-});
-const data = await response.json();
-const totalDots = parseInt(data.content[0].text);
-```
+⚠️ **Importante para producción:** `EXPO_PUBLIC_*` se inyecta en el bundle de JS — cualquiera que descompile el APK/IPA puede extraer la clave. Está bien para pruebas, pero antes de publicar en stores con este modo activo hay que mover la llamada a un backend/proxy que oculte la clave. El toggle en Ajustes es temporal: la idea a futuro es controlar el modo activo con una variable de entorno en vez de un ajuste visible al usuario final.
 
 ---
 

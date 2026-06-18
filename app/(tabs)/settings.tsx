@@ -8,14 +8,61 @@ import { THEMES } from '@/constants/themes';
 import { t } from '@/constants/i18n';
 import { purchaseProduct, restorePurchases, PRODUCT_IDS } from '@/hooks/useMonetization';
 import { exportBackupFile, importBackupFile } from '@/utils/backup';
+import { hasGeminiApiKey } from '@/utils/geminiDetection';
 import AdBanner from '@/components/AdBanner';
+
+/**
+ * Una fila de calibración: etiqueta + valor actual + botones -/+.
+ * Declarativo en vez de 13 bloques de JSX casi idénticos a mano — cada
+ * campo numérico de `Calibration` (useGameStore.ts) se describe una vez
+ * (paso, decimales, rango) y se renderiza con esto.
+ */
+function CalRow({
+  theme, label, value, step, decimals = 0, min, max, onChange,
+}: {
+  theme: any; label: string; value: number; step: number; decimals?: number;
+  min: number; max: number; onChange: (v: number) => void;
+}) {
+  const clamp = (v: number) => Math.min(max, Math.max(min, v));
+  const round = (v: number) => {
+    // Evita el clásico "0.1 + 0.2 = 0.30000000000000004" de floats al
+    // acumular pasos pequeños (0.05) muchas veces.
+    const factor = Math.pow(10, decimals);
+    return Math.round(v * factor) / factor;
+  };
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10, gap: 10 }}>
+      <Text style={{ flex: 1, fontSize: 13, color: theme.textMuted }}>{label}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <TouchableOpacity
+          style={{ width: 28, height: 28, borderRadius: 7, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.cardAlt, alignItems: 'center', justifyContent: 'center' }}
+          onPress={() => onChange(clamp(round(value - step)))}
+        >
+          <Ionicons name="remove" size={14} color={theme.text} />
+        </TouchableOpacity>
+        <Text style={{ fontSize: 14, fontWeight: '700', color: theme.text, minWidth: 44, textAlign: 'center' }}>
+          {value.toFixed(decimals)}
+        </Text>
+        <TouchableOpacity
+          style={{ width: 28, height: 28, borderRadius: 7, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.cardAlt, alignItems: 'center', justifyContent: 'center' }}
+          onPress={() => onChange(clamp(round(value + step)))}
+        >
+          <Ionicons name="add" size={14} color={theme.text} />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
 
 export default function SettingsScreen() {
   const { theme, themeIndex, names, target, lang, isPro, adsRemoved,
-          capicuaEnabled, capicuaPoints, paseEnabled, pasePoints,
-          setName, setTarget, setTheme, setLang, setPro, setAdsRemoved, setCapicua, setPase, archiveAndReset,
+          capicuaEnabled, capicuaPoints, paseEnabled, pasePoints, detectionMode, calibration,
+          setName, setTarget, setTheme, setLang, setPro, setAdsRemoved, setCapicua, setPase, setDetectionMode,
+          setQualityCalibrationValue, setMinTileRectHeightPx, resetCalibration, archiveAndReset,
           exportBackup, importBackup } = useGameStore();
   const [showPro, setShowPro] = useState(false);
+  const [showCalibration, setShowCalibration] = useState(false);
+  const geminiAvailable = hasGeminiApiKey();
   const s = styles(theme);
 
   const handleReset = () => {
@@ -64,6 +111,22 @@ export default function SettingsScreen() {
   };
 
   const adjustPts = (current: number, delta: number) => Math.max(0, Math.min(200, current + delta));
+
+  const selectDetectionMode = (mode: 'local' | 'gemini') => {
+    if (mode === 'gemini' && !geminiAvailable) {
+      Alert.alert(t(lang, 'detectionModeGemini'), t(lang, 'detectionModeGeminiNoKeyHint'));
+      return;
+    }
+    Haptics.selectionAsync();
+    setDetectionMode(mode);
+  };
+
+  const handleResetCalibration = () => {
+    Alert.alert(t(lang, 'calResetConfirmTitle'), t(lang, 'calResetConfirmMsg'), [
+      { text: t(lang, 'cancel'), style: 'cancel' },
+      { text: t(lang, 'calReset'), style: 'destructive', onPress: () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); resetCalibration(); } },
+    ]);
+  };
 
   return (
     <SafeAreaView style={s.safe} edges={['top', 'left', 'right']}>
@@ -166,6 +229,85 @@ export default function SettingsScreen() {
             <TouchableOpacity style={[s.seg, lang === 'es' && s.segActive]} onPress={() => setLang('es')}><Text style={[s.segTxt, lang === 'es' && s.segTxtActive]}>Español</Text></TouchableOpacity>
             <TouchableOpacity style={[s.seg, lang === 'en' && s.segActive]} onPress={() => setLang('en')}><Text style={[s.segTxt, lang === 'en' && s.segTxtActive]}>English</Text></TouchableOpacity>
           </View>
+        </View>
+
+        {/* Detection mode — TEMPORAL, solo desarrollo. Ver detectionModeDesc. */}
+        <Text style={s.sectionLabel}>{t(lang, 'detectionModeSection').toUpperCase()}</Text>
+        <View style={s.card}>
+          <View style={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 4 }}>
+            <Text style={s.specialDesc}>{t(lang, 'detectionModeDesc')}</Text>
+          </View>
+          <View style={s.segRow}>
+            <TouchableOpacity style={[s.seg, detectionMode === 'local' && s.segActive]} onPress={() => selectDetectionMode('local')}>
+              <Text style={[s.segTxt, detectionMode === 'local' && s.segTxtActive]}>{t(lang, 'detectionModeLocal')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.seg, detectionMode === 'gemini' && s.segActive, !geminiAvailable && { opacity: 0.5 }]} onPress={() => selectDetectionMode('gemini')}>
+              <Text style={[s.segTxt, detectionMode === 'gemini' && s.segTxtActive]}>{t(lang, 'detectionModeGemini')}</Text>
+            </TouchableOpacity>
+          </View>
+          {!geminiAvailable && (
+            <View style={{ paddingHorizontal: 14, paddingBottom: 12 }}>
+              <Text style={[s.specialDesc, { color: theme.team2 }]}>{t(lang, 'detectionModeGeminiNoKeyHint')}</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Calibración de captura — TEMPORAL, solo desarrollo. Colapsada
+            por defecto: son 13 valores técnicos que no le interesan a un
+            usuario normal, solo a quien está calibrando en campo. */}
+        <Text style={s.sectionLabel}>{t(lang, 'calSection').toUpperCase()}</Text>
+        <View style={s.card}>
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 13 }}
+            onPress={() => { Haptics.selectionAsync(); setShowCalibration(v => !v); }}
+          >
+            <Text style={[s.rowLabel, { flex: 1 }]}>{t(lang, showCalibration ? 'calHide' : 'calShow')}</Text>
+            <Ionicons name={showCalibration ? 'chevron-up' : 'chevron-down'} size={18} color={theme.textMuted} />
+          </TouchableOpacity>
+
+          {showCalibration && (
+            <>
+              <View style={{ paddingHorizontal: 14, paddingBottom: 10 }}>
+                <Text style={s.specialDesc}>{t(lang, 'calIntro')}</Text>
+              </View>
+
+              <View style={s.divider} />
+              <View style={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 2 }}>
+                <Text style={[s.rowLabel, { marginBottom: 2 }]}>{t(lang, 'calLocalProfile')}</Text>
+                <Text style={s.specialDesc}>{t(lang, 'calLocalProfileDesc')}</Text>
+              </View>
+              <CalRow theme={theme} label={t(lang, 'calMinBrightness')} value={calibration.local.minMeanBrightness} step={5} min={0} max={255} onChange={v => setQualityCalibrationValue('local', 'minMeanBrightness', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMaxBrightness')} value={calibration.local.maxMeanBrightness} step={5} min={0} max={255} onChange={v => setQualityCalibrationValue('local', 'maxMeanBrightness', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMaxSaturated')} value={calibration.local.maxSaturatedRatio} step={0.05} decimals={2} min={0} max={1} onChange={v => setQualityCalibrationValue('local', 'maxSaturatedRatio', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMaxDark')} value={calibration.local.maxDarkRatio} step={0.05} decimals={2} min={0} max={1} onChange={v => setQualityCalibrationValue('local', 'maxDarkRatio', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMinContrast')} value={calibration.local.minContrastRange} step={5} min={0} max={255} onChange={v => setQualityCalibrationValue('local', 'minContrastRange', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMaxShadow')} value={calibration.local.maxShadowUnevenness} step={5} min={0} max={255} onChange={v => setQualityCalibrationValue('local', 'maxShadowUnevenness', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMinSharpness')} value={calibration.local.minSharpness} step={0.5} decimals={1} min={0} max={50} onChange={v => setQualityCalibrationValue('local', 'minSharpness', v)} />
+
+              <View style={s.divider} />
+              <View style={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 2 }}>
+                <Text style={[s.rowLabel, { marginBottom: 2 }]}>{t(lang, 'calGeminiProfile')}</Text>
+                <Text style={s.specialDesc}>{t(lang, 'calGeminiProfileDesc')}</Text>
+              </View>
+              <CalRow theme={theme} label={t(lang, 'calMinBrightness')} value={calibration.gemini.minMeanBrightness} step={5} min={0} max={255} onChange={v => setQualityCalibrationValue('gemini', 'minMeanBrightness', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMaxBrightness')} value={calibration.gemini.maxMeanBrightness} step={5} min={0} max={255} onChange={v => setQualityCalibrationValue('gemini', 'maxMeanBrightness', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMaxSaturated')} value={calibration.gemini.maxSaturatedRatio} step={0.05} decimals={2} min={0} max={1} onChange={v => setQualityCalibrationValue('gemini', 'maxSaturatedRatio', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMaxDark')} value={calibration.gemini.maxDarkRatio} step={0.05} decimals={2} min={0} max={1} onChange={v => setQualityCalibrationValue('gemini', 'maxDarkRatio', v)} />
+              <CalRow theme={theme} label={t(lang, 'calMinSharpness')} value={calibration.gemini.minSharpness} step={0.5} decimals={1} min={0} max={50} onChange={v => setQualityCalibrationValue('gemini', 'minSharpness', v)} />
+
+              <View style={s.divider} />
+              <View style={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 2 }}>
+                <Text style={s.rowLabel}>{t(lang, 'calMarkerSection')}</Text>
+              </View>
+              <CalRow theme={theme} label={t(lang, 'calMinRectHeight')} value={calibration.minTileRectHeightPx} step={5} min={0} max={300} onChange={setMinTileRectHeightPx} />
+
+              <View style={s.divider} />
+              <TouchableOpacity style={[s.dangerBtn, { marginHorizontal: 14, marginTop: 12 }]} onPress={handleResetCalibration}>
+                <Ionicons name="refresh" size={16} color={theme.team2} />
+                <Text style={[s.dangerTxt, { color: theme.team2 }]}>{t(lang, 'calReset')}</Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
 
         {/* Themes */}

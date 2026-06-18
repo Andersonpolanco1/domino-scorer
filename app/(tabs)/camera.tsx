@@ -51,6 +51,11 @@ import {
   TileLayoutResult,
   TileLayoutFailureReason,
 } from "@/utils/lineDetection";
+import {
+  identifyTotalWithGemini,
+  GeminiDetectionError,
+  GeminiDetectionErrorCode,
+} from "@/utils/geminiDetection";
 import { t } from "@/constants/i18n";
 
 // ─── WebView-based pixel decoder ─────────────────────────────────────────────
@@ -163,6 +168,44 @@ interface IdentifiedResult {
   uri: string | null;
   breakdown: IdentifiedTile[];
   allMatched: boolean;
+  /** Qué motor produjo este resultado — usado por la UI para decidir
+   * mensajes y comportamientos específicos de cada modo. */
+  mode: "local" | "gemini";
+}
+
+/**
+ * Recorta una región (en coordenadas de la imagen ya redimensionada para
+ * trabajo, no de pantalla) y devuelve un JPEG en base64 — usado SOLO por
+ * el modo Gemini, que necesita la imagen real en color (no el buffer en
+ * escala de grises que usa el detector local) para enviarla a la API.
+ *
+ * A diferencia de `cropGrayBuffer`, el recorte aquí es nativo (vía
+ * `ImageManipulator`), no se hace a mano sobre un array de píxeles — es
+ * mucho más rápido y no requiere pasar por el WebView.
+ */
+async function cropToJpegBase64(
+  uri: string,
+  frameWidth: number,
+  frameHeight: number,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+): Promise<string | null> {
+  const x0 = Math.max(0, Math.min(Math.round(minX), frameWidth - 1));
+  const y0 = Math.max(0, Math.min(Math.round(minY), frameHeight - 1));
+  const x1 = Math.max(x0 + 1, Math.min(Math.round(maxX), frameWidth));
+  const y1 = Math.max(y0 + 1, Math.min(Math.round(maxY), frameHeight));
+  const w = x1 - x0;
+  const h = y1 - y0;
+  if (w <= 0 || h <= 0) return null;
+
+  const cropped = await ImageManipulator.manipulateAsync(
+    uri,
+    [{ crop: { originX: x0, originY: y0, width: w, height: h } }],
+    { format: ImageManipulator.SaveFormat.JPEG, base64: true },
+  );
+  return cropped.base64 ?? null;
 }
 
 // Intervalo de muestreo de calidad en vivo. Suficientemente frecuente para
@@ -195,8 +238,28 @@ const QUALITY_SAMPLE_INTERVAL_MS = 1000;
 // el frame pequeño hace que cada chequeo sea casi instantáneo.
 const QUALITY_SAMPLE_WIDTH = 120;
 
+// Altura mínima aceptable (en píxeles de la foto de trabajo, resize a
+// 700px de ancho) del recuadro de encuadre antes de intentar el modo
+// Gemini. Por debajo de esto, los puntos de cada ficha ocuparían muy
+// pocos píxeles reales — heurística, no medición exacta, pensada para
+// bloquear el caso obvio (usuario fotografiando muchas fichas desde muy
+// lejos) sin gastar una llamada de red que de todas formas no sería
+// confiable.
+//
+// El valor ya NO vive aquí como constante fija — se movió a
+// `calibration.minTileRectHeightPx` (useGameStore.ts) para poder
+// ajustarlo desde Settings sin rebuild. Ver uso en `captureWithGemini`.
+
 export default function CameraScreen() {
-  const { theme, lang, names, addPoints } = useGameStore();
+  const {
+    theme,
+    lang,
+    names,
+    addPoints,
+    detectionMode,
+    setDetectionMode,
+    calibration,
+  } = useGameStore();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
   const webViewRef = useRef<any>(null);
@@ -398,6 +461,7 @@ export default function CameraScreen() {
 
       return {
         startX: geometry.startX * scaleX,
+        endX: geometry.endX * scaleX,
         topY: geometry.topY * scaleY,
         dividerY: geometry.dividerY * scaleY,
         bottomY: geometry.bottomY * scaleY,
@@ -420,6 +484,20 @@ export default function CameraScreen() {
   const reqCounter = useRef(0);
   const samplingActive = useRef(false);
   const samplingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Distinto de `samplingActive`: ese solo evita que ARRANQUE un nuevo
+  // ciclo de muestreo, pero el `loop` de abajo se sigue reprogramando
+  // cada `QUALITY_SAMPLE_INTERVAL_MS` de todas formas mientras tanto — si
+  // justo en ese instante un muestreo liviano ya estaba en curso (su
+  // propio `takePictureAsync` en pleno vuelo) cuando el usuario presiona
+  // capturar, ese ciclo termina, ve `samplingActive` en false otra vez, y
+  // el loop programa OTRO ciclo 1s después — exactamente la foto de
+  // muestreo "molesta" disparándose en medio del análisis real, que es lo
+  // reportado. `isCapturing` se marca de forma SÍNCRONA al inicio de
+  // `capture()` (antes de cualquier `await`), así que ninguna ejecución
+  // intermedia puede colarse entre esa marca y el primer `takePictureAsync`
+  // real — y el propio `loop` deja de reprogramarse mientras esté en true,
+  // en vez de solo saltarse un ciclo y seguir el reloj.
+  const isCapturing = useRef(false);
 
   const onWebViewMessage = useCallback((event: any) => {
     let msg: any;
@@ -471,7 +549,13 @@ export default function CameraScreen() {
   // calidad (luz, sombra, contraste, nitidez). Se repite mientras la
   // pantalla de cámara esté visible y no haya un resultado mostrado.
   const sampleQualityOnce = useCallback(async () => {
-    if (!cameraRef.current || !webViewReady || samplingActive.current) return;
+    if (
+      !cameraRef.current ||
+      !webViewReady ||
+      samplingActive.current ||
+      isCapturing.current
+    )
+      return;
     samplingActive.current = true;
     setSampling(true);
     const t0 = Date.now();
@@ -516,7 +600,13 @@ export default function CameraScreen() {
         `[quality] decode: ${Date.now() - tDecode0}ms, frameW=${frame.width}, frameH=${frame.height}, grayLen=${frame.gray.length}`,
       );
 
-      const report = analyzeImageQuality(frame.gray, frame.width, frame.height);
+      const report = analyzeImageQuality(
+        frame.gray,
+        frame.width,
+        frame.height,
+        detectionMode,
+        calibration[detectionMode],
+      );
       console.log(
         `[quality] report: ok=${report.ok} issue=${report.issue} meanBrightness=${report.metrics.meanBrightness.toFixed(1)} darkRatio=${report.metrics.darkRatio.toFixed(2)} totalMs=${Date.now() - t0}`,
       );
@@ -537,7 +627,7 @@ export default function CameraScreen() {
       samplingActive.current = false;
       setSampling(false);
     }
-  }, [webViewReady]);
+  }, [webViewReady, detectionMode, calibration]);
 
   useEffect(() => {
     if (!permission?.granted || !webViewReady || result) {
@@ -548,9 +638,9 @@ export default function CameraScreen() {
 
     let cancelled = false;
     const loop = async () => {
-      if (cancelled) return;
+      if (cancelled || isCapturing.current) return;
       await sampleQualityOnce();
-      if (cancelled) return;
+      if (cancelled || isCapturing.current) return;
       samplingTimer.current = setTimeout(loop, QUALITY_SAMPLE_INTERVAL_MS);
     };
     loop();
@@ -606,8 +696,162 @@ export default function CameraScreen() {
   // de "todo bien" antes de tener una lectura real.
   const canCapture = quality?.ok === true && !loading;
 
+  /**
+   * Traduce un error del módulo de Gemini a un mensaje i18n específico y
+   * ofrece, en el mismo Alert, la salida que se confirmó como deseada:
+   * cambiar a modo local en vez de solo cerrar el diálogo y dejar al
+   * usuario atascado en un modo que está fallando.
+   */
+  const handleGeminiError = (err: unknown) => {
+    console.error("[gemini] capture error", err);
+    const code: GeminiDetectionErrorCode =
+      err instanceof GeminiDetectionError ? err.code : "network";
+    const messageKey: Record<
+      GeminiDetectionErrorCode,
+      Parameters<typeof t>[1]
+    > = {
+      no_api_key: "geminiErrorNoApiKey",
+      network: "geminiErrorNetwork",
+      timeout: "geminiErrorTimeout",
+      http_error: "geminiErrorHttp",
+      invalid_response: "geminiErrorInvalidResponse",
+    };
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    Alert.alert(t(lang, "geminiErrorTitle"), t(lang, messageKey[code]), [
+      { text: t(lang, "closeAction"), style: "cancel" },
+      {
+        text: t(lang, "switchToLocalMode"),
+        onPress: () => setDetectionMode("local"),
+      },
+    ]);
+  };
+
+  /**
+   * Camino de captura cuando `detectionMode === "gemini"`.
+   *
+   * A propósito NO llama a `detectTileLayout` (la validación geométrica
+   * que sí corre en el modo local) — decisión de producto confirmada:
+   * el recuadro aquí solo define la región a recortar, nunca rechaza la
+   * foto por geometría fina, porque Gemini es más tolerante a un
+   * encuadre imperfecto que el algoritmo local (que necesita saber
+   * EXACTAMENTE dónde está cada ficha para no diluir la señal).
+   *
+   * SÍ se hace una validación geométrica mínima — gratis, sin red, antes
+   * de gastar una llamada a Gemini —: si el recuadro que el usuario
+   * encuadró es demasiado bajo en píxeles reales, las fichas se verán
+   * como puntitos sin importar qué tan bueno sea el modelo, así que ni
+   * se intenta.
+   */
+  const captureWithGemini = async (
+    frame: DecodedFrame,
+    resized: { uri: string; base64?: string },
+  ) => {
+    const mapped = markerGeometry
+      ? mapMarkersToFrame(markerGeometry, frame.width, frame.height)
+      : null;
+
+    if (mapped) {
+      const rectHeightPx = mapped.bottomY - mapped.topY;
+      // Heurística, no medición exacta (igual que otros umbrales de este
+      // archivo) — por debajo de esto, los puntos de cada ficha ocupan
+      // muy pocos píxeles reales en la foto de trabajo (resize a 700px
+      // de ancho) para distinguirse de forma confiable, sin importar el
+      // motor de detección. Ajustar tras pruebas de campo si hace falta.
+      if (rectHeightPx < calibration.minTileRectHeightPx) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        Alert.alert(
+          t(lang, "qualityBlockedTitle"),
+          t(lang, "qualityTooFar"),
+        );
+        return;
+      }
+    }
+
+    // Margen de seguridad alrededor del recuadro que el usuario vio en
+    // pantalla — el mapeo de marcadores a coordenadas de la foto real es
+    // una APROXIMACIÓN, no una medición exacta (ver nota en
+    // `mapMarkersToFrame`: asume que el preview llena el contenedor igual
+    // que la foto capturada, lo cual puede no calzar pixel a pixel en
+    // todos los dispositivos). Sin margen, ese desajuste podría cortar el
+    // borde de la primera o la última ficha — y una ficha cortada es
+    // mucho peor para la precisión que un poco de mesa vacía de más, que
+    // Gemini ignora sin problema. El margen es proporcional al alto del
+    // recuadro (no un valor fijo en píxeles) para escalar igual sin
+    // importar el nivel de zoom/cantidad de fichas.
+    const marginPx = mapped ? (mapped.bottomY - mapped.topY) * 0.12 : 0;
+
+    const croppedBase64 = mapped
+      ? await cropToJpegBase64(
+          resized.uri,
+          frame.width,
+          frame.height,
+          mapped.startX - marginPx,
+          mapped.topY - marginPx,
+          mapped.endX + marginPx,
+          mapped.bottomY + marginPx,
+        )
+      : null;
+
+    // Respaldo: si por alguna razón no hay geometría de marcadores
+    // todavía (camLayout aún no medido, caso raro), se envía la foto
+    // completa redimensionada en vez de fallar la captura entera.
+    const base64ToSend = croppedBase64 ?? resized.base64 ?? null;
+    if (!base64ToSend) {
+      handleGeminiError(new Error("no image data to send"));
+      return;
+    }
+
+    // El thumbnail que se muestra en el resultado es la MISMA imagen que
+    // se envió a Gemini (no la foto completa) — así se puede verificar a
+    // simple vista, después de cada captura, que el recorte no dejó
+    // ninguna ficha cortada antes de confiar en el número.
+    const sentImageUri = `data:image/jpeg;base64,${base64ToSend}`;
+
+    try {
+      const geminiResult = await identifyTotalWithGemini(base64ToSend);
+      // Se mapea al mismo shape `IdentifiedTile` que ya produce el modo
+      // local — reutiliza tal cual los chips de desglose y el aviso de
+      // "revisa antes de sumar" que ya existían, sin UI nueva. `bbox` y
+      // `orientation` no aplican aquí (Gemini no da coordenadas de
+      // píxeles), se rellenan con valores neutros porque la UI no los usa.
+      // `matched` refleja `reliable` — binario, igual en cada ficha y en
+      // el total, sin nivel "medio".
+      const breakdown: IdentifiedTile[] = geminiResult.tiles.map(
+        (tl, i) => ({
+          index: i,
+          left: tl.left,
+          right: tl.right,
+          total: tl.total,
+          matched: geminiResult.reliable,
+          bbox: { minX: 0, maxX: 0, minY: 0, maxY: 0 },
+          orientation: "vertical",
+        }),
+      );
+      setResult({
+        tiles: geminiResult.tiles.length,
+        total: geminiResult.totalDots,
+        confidence: geminiResult.reliable ? "high" : "low",
+        uri: sentImageUri,
+        breakdown,
+        allMatched: geminiResult.reliable,
+        mode: "gemini",
+      });
+      Haptics.notificationAsync(
+        geminiResult.totalDots > 0
+          ? Haptics.NotificationFeedbackType.Success
+          : Haptics.NotificationFeedbackType.Warning,
+      );
+    } catch (err) {
+      handleGeminiError(err);
+    }
+  };
+
   const capture = async () => {
     if (!cameraRef.current || loading || !canCapture) return;
+    // Síncrono, antes de cualquier `await` — ver nota junto a la
+    // declaración de `isCapturing` arriba sobre por qué esto soluciona la
+    // condición de carrera real (no solo `samplingActive`).
+    isCapturing.current = true;
     setLoading(true);
     setResult(null);
     // Pausar el muestreo de calidad en vivo mientras dura la captura real:
@@ -639,6 +883,8 @@ export default function CameraScreen() {
         frame.gray,
         frame.width,
         frame.height,
+        detectionMode,
+        calibration[detectionMode],
       );
       if (!finalQualityCheck.ok) {
         setQuality(finalQualityCheck);
@@ -647,6 +893,18 @@ export default function CameraScreen() {
           t(lang, "qualityBlockedTitle"),
           t(lang, finalQualityCheck.messageKey),
         );
+        return;
+      }
+
+      // ── Bifurcación según el motor de detección activo ──
+      //
+      // El chequeo de calidad de arriba ya corrió igual para ambos modos
+      // (independiente del motor — ahorra una llamada a Gemini con una
+      // foto que de todas formas no sería confiable). A partir de aquí
+      // cada motor sigue su propio camino; ver `captureWithGemini` para
+      // el razonamiento de por qué el modo Gemini no valida geometría.
+      if (detectionMode === "gemini") {
+        await captureWithGemini(frame, resized);
         return;
       }
 
@@ -766,6 +1024,7 @@ export default function CameraScreen() {
         uri: resized.uri,
         breakdown: identified.tiles,
         allMatched: identified.allMatched,
+        mode: "local",
       });
       Haptics.notificationAsync(
         identified.totalPoints > 0 || identified.tiles.length > 0
@@ -778,6 +1037,7 @@ export default function CameraScreen() {
     } finally {
       setLoading(false);
       samplingActive.current = false;
+      isCapturing.current = false;
       setCaptureAttempt((n) => n + 1);
     }
   };
@@ -853,66 +1113,90 @@ export default function CameraScreen() {
               <CameraView ref={cameraRef} style={s.cam} facing={facing}>
                 {markerGeometry && (
                   <View style={s.markerOverlay} pointerEvents="none">
-                    {/* Marcador de inicio (vertical, borde izquierdo) */}
-                    <View
-                      style={[
-                        s.markerVertical,
-                        {
-                          left: markerGeometry.startX,
-                          top: markerGeometry.topY,
-                          height: markerGeometry.tileHeightPx,
-                          width: markerGeometry.lineWidthPx,
-                          backgroundColor: quality
-                            ? qualityColor
-                            : "rgba(255,255,255,0.6)",
-                        },
-                      ]}
-                    />
-                    {/* Marcador superior */}
-                    <View
-                      style={[
-                        s.markerHorizontal,
-                        {
-                          left: markerGeometry.startX,
-                          top: markerGeometry.topY,
-                          width: markerGeometry.rectWidthPx,
-                          height: markerGeometry.lineWidthPx,
-                          backgroundColor: quality
-                            ? qualityColor
-                            : "rgba(255,255,255,0.6)",
-                        },
-                      ]}
-                    />
-                    {/* Marcador divisor (caras de cada ficha) */}
-                    <View
-                      style={[
-                        s.markerHorizontal,
-                        {
-                          left: markerGeometry.startX,
-                          top: markerGeometry.dividerY,
-                          width: markerGeometry.rectWidthPx,
-                          height: markerGeometry.lineWidthPx,
-                          backgroundColor: quality
-                            ? qualityColor
-                            : "rgba(255,255,255,0.6)",
-                        },
-                      ]}
-                    />
-                    {/* Marcador inferior */}
-                    <View
-                      style={[
-                        s.markerHorizontal,
-                        {
-                          left: markerGeometry.startX,
-                          top: markerGeometry.bottomY,
-                          width: markerGeometry.rectWidthPx,
-                          height: markerGeometry.lineWidthPx,
-                          backgroundColor: quality
-                            ? qualityColor
-                            : "rgba(255,255,255,0.6)",
-                        },
-                      ]}
-                    />
+                    {detectionMode === "gemini" ? (
+                      // Modo Gemini: un solo recuadro simple, sin línea
+                      // divisoria ni exigencia de alineación pixel-perfecta
+                      // (decisión de producto confirmada) — solo ayuda a
+                      // encuadrar y define la región que se recorta antes
+                      // de enviarla a la API.
+                      <View
+                        style={[
+                          s.markerBox,
+                          {
+                            left: markerGeometry.startX,
+                            top: markerGeometry.topY,
+                            width: markerGeometry.rectWidthPx,
+                            height: markerGeometry.tileHeightPx,
+                            borderColor: quality
+                              ? qualityColor
+                              : "rgba(255,255,255,0.6)",
+                          },
+                        ]}
+                      />
+                    ) : (
+                      <>
+                        {/* Marcador de inicio (vertical, borde izquierdo) */}
+                        <View
+                          style={[
+                            s.markerVertical,
+                            {
+                              left: markerGeometry.startX,
+                              top: markerGeometry.topY,
+                              height: markerGeometry.tileHeightPx,
+                              width: markerGeometry.lineWidthPx,
+                              backgroundColor: quality
+                                ? qualityColor
+                                : "rgba(255,255,255,0.6)",
+                            },
+                          ]}
+                        />
+                        {/* Marcador superior */}
+                        <View
+                          style={[
+                            s.markerHorizontal,
+                            {
+                              left: markerGeometry.startX,
+                              top: markerGeometry.topY,
+                              width: markerGeometry.rectWidthPx,
+                              height: markerGeometry.lineWidthPx,
+                              backgroundColor: quality
+                                ? qualityColor
+                                : "rgba(255,255,255,0.6)",
+                            },
+                          ]}
+                        />
+                        {/* Marcador divisor (caras de cada ficha) */}
+                        <View
+                          style={[
+                            s.markerHorizontal,
+                            {
+                              left: markerGeometry.startX,
+                              top: markerGeometry.dividerY,
+                              width: markerGeometry.rectWidthPx,
+                              height: markerGeometry.lineWidthPx,
+                              backgroundColor: quality
+                                ? qualityColor
+                                : "rgba(255,255,255,0.6)",
+                            },
+                          ]}
+                        />
+                        {/* Marcador inferior */}
+                        <View
+                          style={[
+                            s.markerHorizontal,
+                            {
+                              left: markerGeometry.startX,
+                              top: markerGeometry.bottomY,
+                              width: markerGeometry.rectWidthPx,
+                              height: markerGeometry.lineWidthPx,
+                              backgroundColor: quality
+                                ? qualityColor
+                                : "rgba(255,255,255,0.6)",
+                            },
+                          ]}
+                        />
+                      </>
+                    )}
                   </View>
                 )}
               </CameraView>
@@ -1050,7 +1334,9 @@ export default function CameraScreen() {
               />
             )}
 
-            {/* Result cards */}
+            {/* Result cards — ahora ambos modos devuelven conteo de
+                fichas real (Gemini también, desde que devuelve desglose
+                por ficha), así que la tarjeta ya no depende del modo. */}
             <View style={s.resCards}>
               <View style={s.resCard}>
                 <Text style={s.resLabel}>{t(lang, "tilesDetected")}</Text>
@@ -1219,6 +1505,12 @@ const styles = (t: any) =>
     markerHorizontal: {
       position: "absolute",
       borderRadius: 1,
+    },
+    markerBox: {
+      position: "absolute",
+      borderRadius: 14,
+      borderWidth: 2.5,
+      backgroundColor: "transparent",
     },
     scaleControl: {
       alignItems: "center",

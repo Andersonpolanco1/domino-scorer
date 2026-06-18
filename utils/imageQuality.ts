@@ -58,25 +58,72 @@ export interface QualityReport {
   };
 }
 
-// ─── Umbrales (ajustables según pruebas de campo) ───────────────────────────
-const THRESH = {
-  minMeanBrightness: 60, // por debajo de esto: muy oscuro
-  maxMeanBrightness: 225, // por encima de esto: muy claro / lavado
-  maxSaturatedRatio: 0.12, // más del 12% de píxeles "quemados" → reflejo/exceso de luz
-  maxDarkRatio: 0.35, // más del 35% de píxeles casi negros → poca luz general
-  minContrastRange: 45, // rango dinámico mínimo aceptable
-  maxShadowUnevenness: 70, // diferencia de brillo entre zonas de la imagen
-  minSharpness: 4, // varianza mínima del laplaciano (anti-borroso)
+export interface QualityThresholdSet {
+  minMeanBrightness: number;
+  maxMeanBrightness: number;
+  maxSaturatedRatio: number;
+  maxDarkRatio: number;
+  minSharpness: number;
+  /** Solo aplican al perfil "local" — en "gemini" esos dos chequeos no
+   * corren en absoluto (ver razonamiento abajo), así que estos dos
+   * campos se ignoran en ese perfil aunque estén presentes en el tipo. */
+  minContrastRange?: number;
+  maxShadowUnevenness?: number;
+}
+
+// Dos perfiles, no uno: "local" protege la matemática del algoritmo de
+// visión por computadora local (Otsu, Laplaciano, etc.), que SÍ se rompe
+// con sombra desigual o poco contraste. "gemini" solo bloquea los casos
+// catastróficos que ningún sistema (ni un modelo de IA, ni un humano)
+// podría leer — sombra desigual y contraste estrecho NO bloquean en este
+// perfil porque un modelo de visión interpreta la escena completa, no
+// hace binarización por píxel, y es mucho más tolerante a eso.
+//
+// Estos son los valores de FÁBRICA — el usuario puede calibrar sus
+// propios valores desde Settings (ver `useGameStore.ts: calibration`),
+// que se pasan aquí como `customThresholds` y tienen prioridad sobre
+// estos. Se mantienen exportados como referencia y como respaldo si el
+// storage no tuviera calibración guardada todavía.
+export const DEFAULT_THRESH: Record<QualityProfile, QualityThresholdSet> = {
+  local: {
+    minMeanBrightness: 40,
+    maxMeanBrightness: 235,
+    maxSaturatedRatio: 0.15,
+    maxDarkRatio: 0.45,
+    minContrastRange: 30,
+    maxShadowUnevenness: 90,
+    minSharpness: 2.5,
+  },
+  gemini: {
+    minMeanBrightness: 35, // solo bloquea oscuridad casi total
+    maxMeanBrightness: 245, // solo bloquea sobreexposición extrema
+    maxSaturatedRatio: 0.25,
+    maxDarkRatio: 0.55,
+    minSharpness: 1.5, // solo bloquea desenfoque catastrófico (movimiento total)
+    // Sin minContrastRange ni maxShadowUnevenness — esos dos chequeos no
+    // corren en este perfil (ver razonamiento arriba).
+  },
 };
+
+export type QualityProfile = "local" | "gemini";
 
 /**
  * Analiza un frame en escala de grises (1 byte por píxel) y determina
  * si la imagen es apta para el cálculo de puntos.
+ *
+ * @param profile "local" (default) o "gemini" — perfil base, ver
+ *   `DEFAULT_THRESH` arriba.
+ * @param customThresholds Valores calibrados por el usuario desde
+ *   Settings (ver `useGameStore.ts: calibration`) — tienen prioridad
+ *   sobre los de fábrica para los campos que incluyan. Si se omite, se
+ *   usan los valores de fábrica del perfil sin cambios.
  */
 export function analyzeImageQuality(
   gray: Uint8Array | Uint8ClampedArray | number[],
   width: number,
   height: number,
+  profile: QualityProfile = "local",
+  customThresholds?: Partial<QualityThresholdSet>,
 ): QualityReport {
   const arr =
     gray instanceof Uint8Array || gray instanceof Uint8ClampedArray
@@ -128,11 +175,17 @@ export function analyzeImageQuality(
     sharpness,
   };
 
+  // Valores de fábrica del perfil + overrides calibrados por el usuario,
+  // si los hay. `customThresholds` puede venir parcial (por ejemplo, si
+  // se agrega un campo nuevo en el futuro y el storage viejo no lo
+  // tiene) — el spread cubre ese caso con el valor de fábrica.
+  const t: QualityThresholdSet = {
+    ...DEFAULT_THRESH[profile],
+    ...customThresholds,
+  };
+
   // ── 4. Decisión: se evalúan en orden de prioridad práctica ──
-  if (
-    meanBrightness < THRESH.minMeanBrightness ||
-    darkRatio > THRESH.maxDarkRatio
-  ) {
+  if (meanBrightness < t.minMeanBrightness || darkRatio > t.maxDarkRatio) {
     return {
       ok: false,
       issue: "low_light",
@@ -142,8 +195,8 @@ export function analyzeImageQuality(
   }
 
   if (
-    meanBrightness > THRESH.maxMeanBrightness ||
-    saturatedRatio > THRESH.maxSaturatedRatio
+    meanBrightness > t.maxMeanBrightness ||
+    saturatedRatio > t.maxSaturatedRatio
   ) {
     return {
       ok: false,
@@ -153,25 +206,41 @@ export function analyzeImageQuality(
     };
   }
 
-  if (shadowUnevenness > THRESH.maxShadowUnevenness) {
-    return {
-      ok: false,
-      issue: "uneven_shadow",
-      messageKey: "qualityUnevenShadow",
-      metrics,
-    };
+  // Sombra desigual y bajo contraste: solo se evalúan en el perfil
+  // "local" — protegen la binarización del algoritmo de CV local, que un
+  // modelo de visión como Gemini no necesita (ver nota junto a
+  // `DEFAULT_THRESH`).
+  //
+  // CORRECCIÓN: antes estas dos comparaciones leían la constante fija del
+  // módulo en vez de `t` (el umbral ya resuelto para este perfil) — sin
+  // efecto visible mientras no existían overrides (en este branch
+  // `profile` siempre era "local", así que `t` y la constante coincidían
+  // por casualidad), pero hubiera ignorado en silencio cualquier
+  // calibración que el usuario hiciera específicamente sobre estos dos
+  // campos. Con `t.x` el valor calibrado sí se respeta.
+  if (profile === "local") {
+    const maxShadow = t.maxShadowUnevenness ?? DEFAULT_THRESH.local.maxShadowUnevenness!;
+    const minContrast = t.minContrastRange ?? DEFAULT_THRESH.local.minContrastRange!;
+    if (shadowUnevenness > maxShadow) {
+      return {
+        ok: false,
+        issue: "uneven_shadow",
+        messageKey: "qualityUnevenShadow",
+        metrics,
+      };
+    }
+
+    if (contrastRange < minContrast) {
+      return {
+        ok: false,
+        issue: "low_contrast",
+        messageKey: "qualityLowContrast",
+        metrics,
+      };
+    }
   }
 
-  if (contrastRange < THRESH.minContrastRange) {
-    return {
-      ok: false,
-      issue: "low_contrast",
-      messageKey: "qualityLowContrast",
-      metrics,
-    };
-  }
-
-  if (sharpness < THRESH.minSharpness) {
+  if (sharpness < t.minSharpness) {
     return { ok: false, issue: "blurry", messageKey: "qualityBlurry", metrics };
   }
 

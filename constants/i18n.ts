@@ -143,6 +143,51 @@ export const STRINGS = {
     tileBreakdown: "Fichas detectadas",
     tileBreakdownWarning:
       "Algunas fichas (en rojo) no se pudieron confirmar con certeza. Revisa el resultado antes de sumar los puntos.",
+    // ── Modo de detección (temporal, desarrollo) ──
+    detectionModeSection: "Modo de detección (desarrollo)",
+    detectionModeDesc:
+      "Temporal mientras se afina el algoritmo local. Se reemplazará por una variable de entorno más adelante.",
+    detectionModeLocal: "Local (sin internet)",
+    detectionModeGemini: "Gemini (IA, requiere internet)",
+    detectionModeGeminiNoKeyHint:
+      "No se detectó EXPO_PUBLIC_GEMINI_API_KEY. Configúrala para poder usar este modo.",
+    // ── Calibración de captura (temporal, desarrollo) ──
+    calSection: "Calibración de captura (desarrollo)",
+    calIntro:
+      "Ajusta qué tan estrictos son los chequeos de calidad antes de capturar, sin tener que compilar de nuevo. Cambios aquí afectan ambos modos de detección.",
+    calShow: "Mostrar calibración avanzada",
+    calHide: "Ocultar calibración avanzada",
+    calLocalProfile: "Perfil local",
+    calLocalProfileDesc:
+      "Más estricto por diseño: protege la matemática del algoritmo local, que sí se rompe con poca señal real.",
+    calGeminiProfile: "Perfil Gemini",
+    calGeminiProfileDesc:
+      "Más permisivo por diseño: Gemini interpreta la escena completa, no necesita tanta señal como el algoritmo local.",
+    calMarkerSection: "Marcador / encuadre",
+    calMinBrightness: "Brillo mínimo",
+    calMaxBrightness: "Brillo máximo",
+    calMaxSaturated: "% píxeles saturados máx.",
+    calMaxDark: "% píxeles oscuros máx.",
+    calMinContrast: "Contraste mínimo",
+    calMaxShadow: "Sombra desigual máx.",
+    calMinSharpness: "Nitidez mínima",
+    calMinRectHeight: "Alto mínimo del recuadro (px)",
+    calReset: "Restaurar valores de fábrica",
+    calResetConfirmTitle: "¿Restaurar calibración?",
+    calResetConfirmMsg:
+      "Se perderán los valores ajustados y volverán a los de fábrica.",
+    geminiErrorTitle: "Error con Gemini",
+    geminiErrorNoApiKey:
+      "No se configuró la clave de API de Gemini (EXPO_PUBLIC_GEMINI_API_KEY).",
+    geminiErrorNetwork:
+      "No se pudo conectar con Gemini. Revisa tu conexión a internet.",
+    geminiErrorTimeout: "Gemini tardó demasiado en responder. Intenta de nuevo.",
+    geminiErrorHttp: "Gemini devolvió un error del servidor. Intenta de nuevo.",
+    geminiErrorInvalidResponse:
+      "Gemini devolvió una respuesta que no se pudo interpretar.",
+    switchToLocalMode: "Cambiar a modo local",
+    closeAction: "Cerrar",
+    switchedToLocalMode: "Modo cambiado a local",
   },
   en: {
     appName: "Domino Scorer",
@@ -285,6 +330,48 @@ export const STRINGS = {
     tileBreakdown: "Detected tiles",
     tileBreakdownWarning:
       "Some tiles (in red) could not be confirmed with certainty. Review the result before adding the points.",
+    // ── Detection mode (temporary, development) ──
+    detectionModeSection: "Detection mode (development)",
+    detectionModeDesc:
+      "Temporary while the local algorithm gets tuned. Will be replaced by an environment variable later.",
+    detectionModeLocal: "Local (offline)",
+    detectionModeGemini: "Gemini (AI, needs internet)",
+    detectionModeGeminiNoKeyHint:
+      "EXPO_PUBLIC_GEMINI_API_KEY was not found. Set it to use this mode.",
+    // ── Capture calibration (temporary, development) ──
+    calSection: "Capture calibration (development)",
+    calIntro:
+      "Adjust how strict the quality checks are before capturing, without rebuilding. Changes here affect both detection modes.",
+    calShow: "Show advanced calibration",
+    calHide: "Hide advanced calibration",
+    calLocalProfile: "Local profile",
+    calLocalProfileDesc:
+      "Stricter by design: protects the local algorithm's math, which really does break with too little real signal.",
+    calGeminiProfile: "Gemini profile",
+    calGeminiProfileDesc:
+      "More permissive by design: Gemini reads the whole scene, it doesn't need as much signal as the local algorithm.",
+    calMarkerSection: "Marker / framing",
+    calMinBrightness: "Min brightness",
+    calMaxBrightness: "Max brightness",
+    calMaxSaturated: "Max saturated pixels %",
+    calMaxDark: "Max dark pixels %",
+    calMinContrast: "Min contrast",
+    calMaxShadow: "Max uneven shadow",
+    calMinSharpness: "Min sharpness",
+    calMinRectHeight: "Min marker rect height (px)",
+    calReset: "Restore factory values",
+    calResetConfirmTitle: "Restore calibration?",
+    calResetConfirmMsg:
+      "Your adjusted values will be lost and reset to factory defaults.",
+    geminiErrorTitle: "Gemini error",
+    geminiErrorNoApiKey: "Gemini API key not configured (EXPO_PUBLIC_GEMINI_API_KEY).",
+    geminiErrorNetwork: "Could not connect to Gemini. Check your internet connection.",
+    geminiErrorTimeout: "Gemini took too long to respond. Please try again.",
+    geminiErrorHttp: "Gemini returned a server error. Please try again.",
+    geminiErrorInvalidResponse: "Gemini returned a response that couldn't be parsed.",
+    switchToLocalMode: "Switch to local mode",
+    closeAction: "Close",
+    switchedToLocalMode: "Switched to local mode",
   },
 };
 
